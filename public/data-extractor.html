@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BigOSofts Data Extractor — AI Information Extraction</title>
+    <meta
+      name="description"
+      content="Extract formatted text from images and PDFs using AI. Enhance layout with tables, bullet points, and more."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/data-extractor.css" />
+  </head>
+
+  <body>
+    <!-- AI BACKGROUND -->
+    <div class="ai-bg">
+      <div class="orb orb-1"></div>
+      <div class="orb orb-2"></div>
+      <div class="orb orb-3"></div>
+      <div class="orb orb-4"></div>
+      <div class="orb orb-5"></div>
+      <canvas id="neuralCanvas"></canvas>
+      <div class="geo-shapes">
+        <div class="geo geo-1"></div>
+        <div class="geo geo-2"></div>
+        <div class="geo geo-3"></div>
+        <div class="geo geo-4"></div>
+        <div class="geo geo-5"></div>
+        <div class="geo geo-6"></div>
+      </div>
+      <div class="grid-overlay"></div>
+    </div>
+
+    <!-- NAVBAR -->
+    <nav class="navbar">
+      <div class="nav-left">
+        <a class="brand" href="/">
+          <div class="brand-icon">
+            <svg width="38" height="38" viewBox="0 0 40 40" fill="none">
+              <rect x="3" y="7" width="34" height="26" rx="5" fill="#f0f4ff" />
+              <circle cx="13" cy="16" r="2" fill="#6366F1" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">BigOSofts</span>
+            <span class="brand-product">Data Extractor</span>
+          </div>
+        </a>
+      </div>
+      <div class="nav-center">
+        <div class="nav-tagline">AI data extraction workspace</div>
+      </div>
+      <div class="nav-right">
+        <div class="nav-badge">
+          <span class="badge-pulse"></span>
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+          >
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+          </svg>
+          AI Powered
+        </div>
+      </div>
+    </nav>
+
+    <!-- INPUT SECTION -->
+    <div class="de-workspace" id="inputSection">
+      <div class="de-workspace-inner">
+        <div class="de-hero">
+          <h1 class="de-title">
+            Extract Data<br />
+            <span class="gradient-text">from anywhere.</span>
+          </h1>
+          <p class="de-subtitle">
+            Upload images, PDFs, or use your camera to pull out text, tables, and lists exactly how you want them formatted.
+          </p>
+        </div>
+
+        <div class="de-cards-row">
+          <!-- Instructions Card -->
+          <div class="de-card">
+            <div class="de-card-header">
+              <h3>1. Instructions</h3>
+              <span class="de-step-badge">Step 1 of 2</span>
+            </div>
+            <div class="de-card-body">
+              <label class="de-label">What should the AI do with this data?</label>
+              <textarea
+                id="userInput"
+                class="de-textarea"
+                placeholder="E.g., Extract the invoice data into a Markdown table, correct any misspellings, and summarize the total amount..."
+                rows="4"
+              ></textarea>
+              <div class="de-textarea-footer">
+                <span><span id="charCount">0</span> chars</span>
+                <span class="de-hint">✨ Be specific about formatting</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Files Card -->
+          <div class="de-card">
+            <div class="de-card-header">
+              <h3>2. Source Files</h3>
+              <span class="de-step-badge">Step 2 of 2</span>
+            </div>
+            <div class="de-card-body">
+              <p class="de-file-desc">Upload documents or snap a photo. We accept PDF, JPG, PNG, WebP.</p>
+              <div class="de-upload-btns">
+                <label class="de-btn-upload">
+                  <input type="file" id="fileInput" multiple accept="image/*,application/pdf" style="display:none;" />
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                  Upload File(s)
+                </label>
+                <button type="button" class="de-btn-upload" id="cameraBtn">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                  Use Camera
+                </button>
+              </div>
+
+              <!-- Camera Modal -->
+              <div id="cameraModal" class="camera-modal hidden">
+                <div class="camera-container">
+                  <video id="cameraVideo" autoplay playsinline></video>
+                  <div class="camera-actions">
+                    <button type="button" id="captureBtn" class="btn-primary">Capture</button>
+                    <button type="button" id="closeCameraBtn" class="de-btn-upload">Close</button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="fileList" class="file-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Extract Button -->
+        <div class="de-action-bar" id="actionPanel">
+          <button id="generateBtn" class="de-extract-btn">
+            <span class="de-extract-btn-content" id="btnContent">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              Extract Information
+            </span>
+            <span class="de-extract-btn-loading" id="btnLoading" style="display: none">
+              <div class="de-spinner"></div>
+              Processing...
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RESULTS SECTION (hidden until results are ready) -->
+    <div class="de-results-section" id="resultSection" style="display: none;">
+      <div class="de-results-wrapper">
+        <!-- Results Header -->
+        <div class="de-results-header">
+          <div class="de-results-header-left">
+            <div class="de-results-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            </div>
+            <div>
+              <h2 class="de-results-title">Data Extracted Successfully</h2>
+              <p class="de-results-subtitle">Your extracted content is displayed below</p>
+            </div>
+          </div>
+          <div class="de-results-header-actions">
+            <button class="de-copy-btn" id="copyBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              <span id="copyBtnText">Copy All</span>
+            </button>
+            <button class="de-new-btn" id="extractAnotherBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+              Extract Another
+            </button>
+          </div>
+        </div>
+
+        <!-- Results Content -->
+        <div class="de-results-body">
+          <div class="de-results-content" id="resultContent"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ERROR SECTION (hidden until error) -->
+    <div class="de-error-section" id="errorSection" style="display: none;">
+      <div class="de-error-wrapper">
+        <div class="de-error-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#EF4444" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </div>
+        <h2 class="de-error-title">Extraction Failed</h2>
+        <p class="de-error-msg" id="errorMessage">Something went wrong. Please try again.</p>
+        <button class="de-new-btn" id="errorRetryBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+          Try Again
+        </button>
+      </div>
+    </div>
+
+    <footer class="site-footer">
+      <p>© 2026 BigOSofts — Powered by BigOSofts</p>
+    </footer>
+
+    <script src="/showdown.min.js"></script>
+    <script src="/data-extractor.js"></script>
+
+    <!-- Neural Network Animation Script -->
+    <script>
+      (function () {
+        const canvas = document.getElementById("neuralCanvas");
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        let W, H, nodes = [], animId;
+        function resize() {
+          W = canvas.width = window.innerWidth;
+          H = canvas.height = window.innerHeight;
+          initNodes();
+        }
+        function initNodes() {
+          const count = Math.min(60, Math.floor((W * H) / 18000));
+          nodes = [];
+          for (let i = 0; i < count; i++)
+            nodes.push({
+              x: Math.random() * W,
+              y: Math.random() * H,
+              vx: (Math.random() - 0.5) * 0.4,
+              vy: (Math.random() - 0.5) * 0.4,
+              r: Math.random() * 2.5 + 1,
+              opacity: Math.random() * 0.5 + 0.2,
+            });
+        }
+        function draw() {
+          ctx.clearRect(0, 0, W, H);
+          const maxDist = 140;
+          for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+              const dx = nodes[i].x - nodes[j].x;
+              const dy = nodes[i].y - nodes[j].y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist < maxDist) {
+                const alpha = (1 - dist / maxDist) * 0.18;
+                const grad = ctx.createLinearGradient(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
+                grad.addColorStop(0, `rgba(99,102,241,${alpha})`);
+                grad.addColorStop(0.5, `rgba(168,85,247,${alpha * 0.7})`);
+                grad.addColorStop(1, `rgba(236,72,153,${alpha})`);
+                ctx.beginPath();
+                ctx.strokeStyle = grad;
+                ctx.lineWidth = 0.8;
+                ctx.moveTo(nodes[i].x, nodes[i].y);
+                ctx.lineTo(nodes[j].x, nodes[j].y);
+                ctx.stroke();
+              }
+            }
+          }
+          nodes.forEach((n) => {
+            const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 2.5);
+            grad.addColorStop(0, `rgba(139,92,246,${n.opacity})`);
+            grad.addColorStop(1, `rgba(99,102,241,0)`);
+            ctx.beginPath();
+            ctx.fillStyle = grad;
+            ctx.arc(n.x, n.y, n.r * 2.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(200,190,255,${n.opacity * 0.9})`;
+            ctx.arc(n.x, n.y, n.r * 0.7, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          nodes.forEach((n) => {
+            n.x += n.vx;
+            n.y += n.vy;
+            if (n.x < 0 || n.x > W) n.vx *= -1;
+            if (n.y < 0 || n.y > H) n.vy *= -1;
+          });
+          animId = requestAnimationFrame(draw);
+        }
+        window.addEventListener("resize", resize);
+        resize();
+        draw();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BigOSofts Document Maker — AI Document Generator</title>
+    <meta
+      name="description"
+      content="Generate polished Word documents with AI. Describe your content and receive a professionally formatted .docx file."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+
+  <body>
+    <!-- AI BACKGROUND (shared with Slide Maker) -->
+    <div class="ai-bg">
+      <div class="orb orb-1"></div>
+      <div class="orb orb-2"></div>
+      <div class="orb orb-3"></div>
+      <div class="orb orb-4"></div>
+      <div class="orb orb-5"></div>
+      <canvas id="neuralCanvas"></canvas>
+      <div class="geo-shapes">
+        <div class="geo geo-1"></div>
+        <div class="geo geo-2"></div>
+        <div class="geo geo-3"></div>
+        <div class="geo geo-4"></div>
+        <div class="geo geo-5"></div>
+        <div class="geo geo-6"></div>
+      </div>
+      <div class="grid-overlay"></div>
+    </div>
+
+    <!-- NAVBAR -->
+    <nav class="navbar">
+      <div class="nav-left">
+        <div class="brand">
+          <div class="brand-icon">
+            <!-- simplified brand icon for parity -->
+            <svg width="38" height="38" viewBox="0 0 40 40" fill="none">
+              <rect x="3" y="7" width="34" height="26" rx="5" fill="#f0f4ff" />
+              <circle cx="13" cy="16" r="2" fill="#6366F1" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">BigOSofts</span>
+            <span class="brand-product">Document Maker</span>
+          </div>
+        </div>
+      </div>
+      <div class="nav-center">
+        <div class="nav-tagline">AI document workspace</div>
+      </div>
+      <div class="nav-right">
+        <div class="nav-badge">
+          <span class="badge-pulse"></span>
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+          >
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+          </svg>
+          AI Powered
+        </div>
+      </div>
+    </nav>
+
+    <div class="page-container">
+      <section class="col-left">
+        <div class="hero-block">
+          <div class="hero-eyebrow">
+            <span class="eyebrow-dot"></span>AI Document Generator
+          </div>
+          <h1 class="hero-title">
+            Turn one brief into a
+            <span class="text-shimmer">document worth sharing.</span>
+          </h1>
+          <p class="hero-desc">
+            Give the AI your brief and receive a professional, editable Word
+            document tailored to your needs.
+          </p>
+        </div>
+
+        <div class="card card-input" id="inputCard">
+          <div class="card-section">
+            <div class="section-top">
+              <label class="section-label" for="content">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"
+                  />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+                Your Content &amp; Instructions
+              </label>
+              <span class="char-badge" id="count">0</span>
+            </div>
+            <div class="textarea-wrap">
+              <textarea
+                id="content"
+                placeholder="Example: Create a formal report with title, metadata, an executive summary, observations, and a register table. Use a formal tone."
+              ></textarea>
+              <div class="textarea-glow"></div>
+            </div>
+          </div>
+
+          <div class="card-section">
+            <div class="section-top">
+              <label class="section-label">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <circle cx="8.5" cy="8.5" r="1.5" />
+                  <polyline points="21 15 16 10 5 21" />
+                </svg>
+                Attach Images <span class="opt-tag">Optional</span>
+              </label>
+            </div>
+            <div class="upload-body">
+              <p class="upload-hint">
+                Upload images or paste URLs. Add descriptions so AI knows where
+                to place each image.
+              </p>
+              <div id="images"></div>
+              <button type="button" class="btn-add-img" id="addImage">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                Add Image
+              </button>
+            </div>
+          </div>
+
+          <button class="btn-generate" id="generateBtn">
+            <span class="btn-gen-content" id="btnContent">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+              Generate document
+            </span>
+            <span class="btn-gen-loading" id="btnLoading" style="display: none">
+              <div class="btn-spinner"></div>
+              Creating your .docx…
+            </span>
+          </button>
+        </div>
+
+        <div class="tips-row">
+          <span class="tip">💡 Be specific about content &amp; style</span>
+          <span class="tip">📄 Include metadata (title, date, author)</span>
+          <span class="tip">🖼️ Upload images and describe placement</span>
+        </div>
+        <!-- Result / Error (kept for compatibility with document-maker.js) -->
+        <div id="result" hidden class="result">
+          <strong>Your document is ready</strong>
+          <p id="resultName">Editable .docx file</p>
+          <a id="download" href="#">Download .docx <b>↓</b></a>
+        </div>
+        <div id="error" hidden class="error"></div>
+      </section>
+
+      <section class="col-right">
+        <div class="status-orb-container">
+          <div class="state-panel active" id="state-idle">
+            <div class="idle-kicker"><span></span>AI document studio</div>
+            <div class="idle-visual">
+              <div class="idle-rings">
+                <div class="ring ring-1"></div>
+                <div class="ring ring-2"></div>
+                <div class="ring ring-3"></div>
+              </div>
+              <div class="idle-center">
+                <svg
+                  width="56"
+                  height="56"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="url(#brandGrad1)"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </svg>
+              </div>
+            </div>
+            <h2 class="state-title">From idea to a polished document</h2>
+            <p class="state-desc">
+              Give the AI your brief and receive an editable Word document ready
+              for distribution.
+            </p>
+            <div class="idle-steps" aria-label="How it works">
+              <div class="idle-step">
+                <span>01</span>
+                <p>
+                  <strong>Write your brief</strong>Tell us the topic, data and
+                  tone.
+                </p>
+              </div>
+              <div class="idle-step">
+                <span>02</span>
+                <p>
+                  <strong>Attach images</strong>Optional images will be placed
+                  per your description.
+                </p>
+              </div>
+              <div class="idle-step">
+                <span>03</span>
+                <p>
+                  <strong>Generate and download</strong>Get an editable .docx
+                  file.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="state-panel" id="state-loading" style="display: none">
+            <div class="loader-visual">
+              <div class="loader-orbit">
+                <div class="orbit-dot d1"></div>
+                <div class="orbit-dot d2"></div>
+                <div class="orbit-dot d3"></div>
+              </div>
+              <div class="loader-center-icon">
+                <svg
+                  width="40"
+                  height="40"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="url(#brandGrad1)"
+                  stroke-width="2"
+                >
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                </svg>
+              </div>
+            </div>
+            <h2 class="state-title" id="progressTitle">
+              Crafting Your Document...
+            </h2>
+            <p class="state-desc" id="progressSubtitle">
+              AI is analyzing your content
+            </p>
+            <div class="ai-activity" aria-live="polite" aria-atomic="true">
+              <div class="ai-activity-label">
+                <span class="ai-activity-pulse"></span>What the AI is working on
+              </div>
+              <p class="ai-activity-message" id="activityMessage">
+                Reading your topic and identifying structure
+              </p>
+            </div>
+            <div class="progress-bar-wrap">
+              <div
+                class="progress-bar"
+                id="progressBar"
+                style="width: 0%"
+              ></div>
+            </div>
+            <div class="steps-list">
+              <div class="gen-step active" id="step1">
+                <div class="step-dot"></div>
+                <span>Analyzing content</span>
+              </div>
+              <div class="gen-step" id="step2">
+                <div class="step-dot"></div>
+                <span>AI designing document</span>
+              </div>
+              <div class="gen-step" id="step3">
+                <div class="step-dot"></div>
+                <span>Building DOCX file</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="state-panel" id="state-success" style="display: none">
+            <div class="success-visual">
+              <div class="success-ring"></div>
+              <svg
+                width="56"
+                height="56"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#10B981"
+                stroke-width="2.5"
+              >
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+            </div>
+            <h2 class="state-title" id="successTitle">Document Ready!</h2>
+            <p class="state-desc">
+              Your editable document is ready to download.
+            </p>
+            <div class="downloads-list" id="downloadsList"></div>
+            <a class="btn-download" id="downloadBtn" href="#" download hidden
+              >Download</a
+            >
+            <button class="btn-another" onclick="resetUI()">
+              Create Another
+            </button>
+          </div>
+
+          <div class="state-panel" id="state-error" style="display: none">
+            <div class="error-visual">
+              <svg
+                width="56"
+                height="56"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#EF4444"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+            </div>
+            <h2 class="state-title">Generation Failed</h2>
+            <p class="state-desc error-msg" id="errorMessage">
+              Something went wrong. Please try again.
+            </p>
+            <button class="btn-another" onclick="resetUI()">Try Again</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="site-footer">
+      <p>© 2026 BigOSofts — Powered by BigOSofts</p>
+    </footer>
+
+    <script src="/app.js"></script>
+    <script src="/document-maker.js"></script>
+
+    <!-- Neural Network Animation Script (copied from slide-maker) -->
+    <script>
+      (function () {
+        const canvas = document.getElementById("neuralCanvas");
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        let W,
+          H,
+          nodes = [],
+          animId;
+        function resize() {
+          W = canvas.width = window.innerWidth;
+          H = canvas.height = window.innerHeight;
+          initNodes();
+        }
+        function initNodes() {
+          const count = Math.min(60, Math.floor((W * H) / 18000));
+          nodes = [];
+          for (let i = 0; i < count; i++)
+            nodes.push({
+              x: Math.random() * W,
+              y: Math.random() * H,
+              vx: (Math.random() - 0.5) * 0.4,
+              vy: (Math.random() - 0.5) * 0.4,
+              r: Math.random() * 2.5 + 1,
+              opacity: Math.random() * 0.5 + 0.2,
+            });
+        }
+        function draw() {
+          ctx.clearRect(0, 0, W, H);
+          const maxDist = 140;
+          for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+              const dx = nodes[i].x - nodes[j].x;
+              const dy = nodes[i].y - nodes[j].y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist < maxDist) {
+                const alpha = (1 - dist / maxDist) * 0.18;
+                const grad = ctx.createLinearGradient(
+                  nodes[i].x,
+                  nodes[i].y,
+                  nodes[j].x,
+                  nodes[j].y,
+                );
+                grad.addColorStop(0, `rgba(99,102,241,${alpha})`);
+                grad.addColorStop(0.5, `rgba(168,85,247,${alpha * 0.7})`);
+                grad.addColorStop(1, `rgba(236,72,153,${alpha})`);
+                ctx.beginPath();
+                ctx.strokeStyle = grad;
+                ctx.lineWidth = 0.8;
+                ctx.moveTo(nodes[i].x, nodes[i].y);
+                ctx.lineTo(nodes[j].x, nodes[j].y);
+                ctx.stroke();
+              }
+            }
+          }
+          nodes.forEach((n) => {
+            const grad = ctx.createRadialGradient(
+              n.x,
+              n.y,
+              0,
+              n.x,
+              n.y,
+              n.r * 2.5,
+            );
+            grad.addColorStop(0, `rgba(139,92,246,${n.opacity})`);
+            grad.addColorStop(1, `rgba(99,102,241,0)`);
+            ctx.beginPath();
+            ctx.fillStyle = grad;
+            ctx.arc(n.x, n.y, n.r * 2.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(200,190,255,${n.opacity * 0.9})`;
+            ctx.arc(n.x, n.y, n.r * 0.7, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          nodes.forEach((n) => {
+            n.x += n.vx;
+            n.y += n.vy;
+            if (n.x < 0 || n.x > W) n.vx *= -1;
+            if (n.y < 0 || n.y > H) n.vy *= -1;
+          });
+          animId = requestAnimationFrame(draw);
+        }
+        window.addEventListener("resize", resize);
+        resize();
+        draw();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "pptx-generator",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "docx": "^9.7.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "multer": "^2.2.0",
+    "openai": "^7.1.0",
+    "pdf-to-img": "^6.2.0",
+    "pptxgenjs": "^4.0.1",
+    "sharp": "^0.35.3",
+    "uuid": "^14.0.1"
+  }
+}
