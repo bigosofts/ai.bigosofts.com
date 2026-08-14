@@ -1,8 +1,8 @@
 require("dotenv").config({ override: true });
 
 // --- CPanel / CloudLinux NPROC Thread Limit Fix ---
-// Native C++ modules like sharp (libvips) and canvas (cairo/glib) will try to 
-// spawn threads equal to the CPU core count on startup. On shared hosting (cPanel), 
+// Native C++ modules like sharp (libvips) and canvas (cairo/glib) will try to
+// spawn threads equal to the CPU core count on startup. On shared hosting (cPanel),
 // this hits the NPROC limit and causes "glib: Error creating thread: Resource temporarily unavailable".
 // We MUST set these before requiring any other module.
 process.env.UV_THREADPOOL_SIZE = "1";
@@ -47,6 +47,16 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static("public"));
+
+// Ensure data directory and authorized users file
+const DATA_DIR = path.join(__dirname, "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+const AUTH_USERS_FILE = path.join(DATA_DIR, "authorized_users.json");
+if (!fs.existsSync(AUTH_USERS_FILE)) fs.writeFileSync(AUTH_USERS_FILE, "[]", "utf8");
+
+// In-memory OTP store: { email: { otp, name, age, page, expiresAt } }
+const otpStore = new Map();
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 const PORT = process.env.PORT || 3000;
 const OUTPUT_DIR = path.join(__dirname, "output");
@@ -104,7 +114,9 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const allowed = /jpeg|jpg|png|gif|svg|webp|bmp|pdf/;
     const extOk = allowed.test(path.extname(file.originalname).toLowerCase());
-    const mimeOk = allowed.test(file.mimetype.split("/")[1]) || file.mimetype === "application/pdf";
+    const mimeOk =
+      allowed.test(file.mimetype.split("/")[1]) ||
+      file.mimetype === "application/pdf";
     if (extOk || mimeOk) {
       cb(null, true);
     } else {
@@ -127,7 +139,7 @@ setInterval(
           const stat = fs.statSync(fp);
           if (now - stat.mtimeMs > 30 * 60 * 1000) {
             fs.unlinkSync(fp);
-            console.log(`🧹 Stale upload removed: ${f}`);
+            console.log(`ЁЯз╣ Stale upload removed: ${f}`);
           }
         } catch (e) {
           console.error(`Error deleting upload file ${f}:`, e.message);
@@ -186,12 +198,98 @@ app.post("/api/upload-image", upload.single("image"), (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// API: Request access (send OTP + admin notification)
+// ----------------------------------------------------------------------------
+app.post("/api/request-access", async (req, res) => {
+  try {
+    const { name, age, email, page } = req.body || {};
+    if (!name || !email || !page) {
+      return res.status(400).json({ success: false, error: "Missing fields" });
+    }
+
+    // Generate 6-digit OTP
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = Date.now() + OTP_TTL_MS;
+    otpStore.set(email + "|" + page, { otp, name, age, page, expiresAt });
+
+    // Send admin email
+    const adminHtml = `<p>User trying to access ${page}:</p><ul><li><strong>Name:</strong> ${name}</li><li><strong>Email:</strong> ${email}</li><li><strong>Age:</strong> ${age || "-"}</li></ul>`;
+    await fetch("https://mailer.bigosofts.com/send-mail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: "bigosofts@gmail.com",
+        subject: `[BigOSofts] Access attempt: ${page} — from ${name}`,
+        text: `User ${name} <${email}> (age: ${age || "-"}) is attempting to access ${page}.`,
+        html: adminHtml,
+      }),
+    });
+
+    // Send client email with OTP
+    const clientHtml = `<p>Hi ${name},</p><p>Your one-time code to access BigOSofts ${page} is:</p><h2 style="letter-spacing:4px">${otp}</h2><p>This code expires in 10 minutes. If you didn't request this, ignore this email.</p>`;
+    await fetch("https://mailer.bigosofts.com/send-mail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: email,
+        subject: "Your BigOSofts access code",
+        text: `Hi ${name}, your access code is ${otp}`,
+        html: clientHtml,
+      }),
+    });
+
+    return res.json({ success: true, message: "OTP sent" });
+  } catch (err) {
+    console.error("request-access error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// API: Verify OTP and grant access
+// ----------------------------------------------------------------------------
+app.post("/api/verify-otp", async (req, res) => {
+  try {
+    const { email, otp, page } = req.body || {};
+    if (!email || !otp || !page) {
+      return res.status(400).json({ success: false, error: "Missing fields" });
+    }
+    const key = email + "|" + page;
+    const record = otpStore.get(key);
+    if (!record) {
+      return res.status(400).json({ success: false, error: "No OTP found" });
+    }
+    if (Date.now() > record.expiresAt) {
+      otpStore.delete(key);
+      return res.status(400).json({ success: false, error: "OTP expired" });
+    }
+    if (record.otp !== String(otp).trim()) {
+      return res.status(400).json({ success: false, error: "Invalid OTP" });
+    }
+
+    // Append to authorized users file
+    const users = JSON.parse(fs.readFileSync(AUTH_USERS_FILE, "utf8") || "[]");
+    users.push({ name: record.name, email, age: record.age || null, page, grantedAt: new Date().toISOString() });
+    fs.writeFileSync(AUTH_USERS_FILE, JSON.stringify(users, null, 2), "utf8");
+
+    // cleanup
+    otpStore.delete(key);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("verify-otp error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
 // API: Upload File (Image or PDF)
 // ----------------------------------------------------------------------------
 app.post("/api/upload-file", upload.single("file"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, error: "No file provided" });
+      return res
+        .status(400)
+        .json({ success: false, error: "No file provided" });
     }
     const filePath = req.file.path;
     const staticUrl = `/uploads/${req.file.filename}`;
@@ -200,7 +298,7 @@ app.post("/api/upload-file", upload.single("file"), (req, res) => {
       filePath: filePath,
       staticUrl: staticUrl,
       fileName: req.file.filename,
-      mimeType: req.file.mimetype
+      mimeType: req.file.mimetype,
     });
   } catch (error) {
     console.error("Upload error:", error);
@@ -215,7 +313,12 @@ app.post("/api/extract-data", async (req, res) => {
   try {
     const { prompt, filePaths } = req.body;
     if (!prompt || !filePaths || filePaths.length === 0) {
-      return res.status(400).json({ success: false, error: "Prompt and at least one file are required." });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Prompt and at least one file are required.",
+        });
     }
 
     const base64Images = [];
@@ -224,42 +327,63 @@ app.post("/api/extract-data", async (req, res) => {
       if (!fs.existsSync(filePath)) continue;
 
       const ext = path.extname(filePath).toLowerCase();
-      
-      if (ext === '.pdf') {
+
+      if (ext === ".pdf") {
         // LAZY LOAD pdf-to-img ONLY if it's a PDF.
         // pdf-to-img depends on canvas/glib which causes thread crashes in cPanel.
-        const { pdf } = await import('pdf-to-img');
-        const standardFontPath = path.join(__dirname, 'node_modules', 'pdfjs-dist', 'standard_fonts', '/').replace(/\\/g, '/');
-        const document = await pdf(filePath, { scale: 1.5, standardFontDataUrl: standardFontPath });
+        const { pdf } = await import("pdf-to-img");
+        const standardFontPath = path
+          .join(__dirname, "node_modules", "pdfjs-dist", "standard_fonts", "/")
+          .replace(/\\/g, "/");
+        const document = await pdf(filePath, {
+          scale: 1.5,
+          standardFontDataUrl: standardFontPath,
+        });
         let pageCount = 0;
         for await (const pageBuffer of document) {
           pageCount++;
           if (pageCount > 5) break; // limit to 5 pages
           try {
             const enhanced = await sharp(pageBuffer)
-              .resize({ width: 1500, height: 1500, fit: 'inside', withoutEnlargement: true })
+              .resize({
+                width: 1500,
+                height: 1500,
+                fit: "inside",
+                withoutEnlargement: true,
+              })
               .normalize()
               .jpeg({ quality: 80 })
               .toBuffer();
-            base64Images.push(enhanced.toString('base64'));
+            base64Images.push(enhanced.toString("base64"));
           } catch (sharpErr) {
-            console.warn("Sharp resizing failed on PDF page, falling back to raw buffer", sharpErr.message);
-            base64Images.push(pageBuffer.toString('base64'));
+            console.warn(
+              "Sharp resizing failed on PDF page, falling back to raw buffer",
+              sharpErr.message,
+            );
+            base64Images.push(pageBuffer.toString("base64"));
           }
         }
       } else {
         try {
           const enhanced = await sharp(filePath)
-            .resize({ width: 1500, height: 1500, fit: 'inside', withoutEnlargement: true })
+            .resize({
+              width: 1500,
+              height: 1500,
+              fit: "inside",
+              withoutEnlargement: true,
+            })
             .normalize()
             .jpeg({ quality: 80 })
             .toBuffer();
-          base64Images.push(enhanced.toString('base64'));
+          base64Images.push(enhanced.toString("base64"));
         } catch (sharpErr) {
-          console.warn("Sharp resizing failed on image, falling back to raw buffer", sharpErr.message);
+          console.warn(
+            "Sharp resizing failed on image, falling back to raw buffer",
+            sharpErr.message,
+          );
           // If glib thread creation fails in sharp, we fallback to just reading the file directly
           const rawBuffer = fs.readFileSync(filePath);
-          base64Images.push(rawBuffer.toString('base64'));
+          base64Images.push(rawBuffer.toString("base64"));
         }
       }
     }
@@ -398,16 +522,16 @@ You will be provided with a user's presentation content and instructions.
 Your goal is to generate ONLY the Javascript code using the 'pptxgenjs' library to create the presentation.
 DO NOT output any markdown blocks, just raw Javascript code that can be executed directly in a Node.js environment.
 
-# PRIORITY 1 — DATA FIDELITY AND OVERFLOW
+# PRIORITY 1 тАФ DATA FIDELITY AND OVERFLOW
 You MUST NOT drop, skip, merge, or combine any separately named user data points. You may summarize supporting descriptions, fix grammar, and polish wording, but preserve every individual item and its order.
-For an explicit sequence, each source stage MUST become exactly one array element. For example, "Farm → Collection → Processing → Storage → Transport → Retailer → Consumer" requires seven separate process-flow items—never combine Retailer and Consumer into one card.
+For an explicit sequence, each source stage MUST become exactly one array element. For example, "Farm тЖТ Collection тЖТ Processing тЖТ Storage тЖТ Transport тЖТ Retailer тЖТ Consumer" requires seven separate process-flow itemsтАФnever combine Retailer and Consumer into one card.
 Pass the complete ordered array to its layout function in ONE call, even when it exceeds one slide's capacity. Do NOT truncate it or split it manually. The layout functions paginate overflow automatically.
 
-# PRIORITY 2 — SOURCE OF TRUTH (beautiful_pptx_skill.md)
+# PRIORITY 2 тАФ SOURCE OF TRUTH (beautiful_pptx_skill.md)
 The following is the complete design system and reference code. You MUST strictly follow these rules:
 1. ONLY use the palette and font definitions defined in the skill file.
 2. ONLY call the layout functions (like addTitleSlide, addCardGrid3, etc.) described in the skill file.
-3. You must select ONE color palette from §2. Do NOT mix palettes.${paletteInstruction}
+3. You must select ONE color palette from ┬з2. Do NOT mix palettes.${paletteInstruction}
 4. Call the tested layout functions directly; do not invent or prefix function names.
 5. Refer to the AI Layout Decision Engine in the skill file to select the layout for the content type.
 6. The Javascript you output will be injected into a boilerplate that already defines the layout functions.
@@ -575,16 +699,21 @@ function runGeneratorScript(scriptPath) {
     // Use process.execPath instead of 'node' so child processes work on
     // cPanel/Passenger where the node binary isn't in the default PATH.
     const nodeExecutable = process.execPath;
-    execFile(nodeExecutable, [scriptPath], { timeout: 300_000 }, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Execution error: ${error}\nStderr: ${stderr}`);
-        reject(
-          new Error("Failed to generate a PPTX variant during rendering."),
-        );
-        return;
-      }
-      resolve(stdout);
-    });
+    execFile(
+      nodeExecutable,
+      [scriptPath],
+      { timeout: 300_000 },
+      (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Execution error: ${error}\nStderr: ${stderr}`);
+          reject(
+            new Error("Failed to generate a PPTX variant during rendering."),
+          );
+          return;
+        }
+        resolve(stdout);
+      },
+    );
   });
 }
 
@@ -596,7 +725,7 @@ function cleanupUploadedImages(filePaths) {
     try {
       if (fp && fs.existsSync(fp)) {
         fs.unlinkSync(fp);
-        console.log(`🧹 Cleaned up uploaded image: ${path.basename(fp)}`);
+        console.log(`ЁЯз╣ Cleaned up uploaded image: ${path.basename(fp)}`);
       }
     } catch (e) {
       console.error(`Failed to cleanup ${fp}:`, e.message);
@@ -655,16 +784,17 @@ app.post("/api/generate-document", async (req, res) => {
         return `Image ${index + 1}: description: ${String(image.description || "No description supplied")}.`;
       })
       .join("\n");
-    const systemPrompt = `You are a professional Word document architect. Turn the user's brief into a polished, faithful document plan. Choose an appropriate document archetype and layout based on the reference skill. Preserve all facts. Use supplied image DESCRIPTIONS only to decide placement; do not infer image content from filenames, URLs, upload paths, or other metadata. Do not change dates, values, names, or topic. Do not merge, drop, or reorder user data. Return ONLY valid JSON matching this schema:\n{"title":"string","subtitle":"string","documentType":"string","designPreset":"standard_business|formal_administrative_register|formal_letter|professional_cv|business_proposal","metadata":["Label: value"],"letterMeta":{"date":"string","recipientLines":["string"],"subject":"string","salutation":"string","closing":"string","signatory":"string","signatoryTitle":"string","signatoryOrg":"string"},"cvMeta":{"name":"string","title":"string","contact":[{"icon":"phone|email|link","value":"string"}],"education":[{"degree":"string","institution":"string","year":"string"}],"skills":["string"],"languages":["string"],"profile":"string","experience":[{"title":"string","company":"string","date":"string","bullets":["string"]}],"projects":[{"name":"string","description":"string","link":"string"}]},"proposalMeta":{"title":"string","subtitle":"string","preparedFor":"string","preparedBy":"string","date":"string"},"sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"numbered":["string"],"callout":"string","signatures":[{"role":"string","name":"string"}],"table":{"headers":["string"],"rows":[["string"]]},"bigNumberList":[{"number":"string","title":"string","text":"string"}],"dividedList":[{"title":"string","subtitle":"string"}]}],"imagePlacements":[{"imageIndex":1,"afterSection":0,"caption":"string","placement":"wide"}]}\nChoose professional_cv for modern two-column CVs or resumes. When using professional_cv, you MUST populate the cvMeta object with name, title, contact, education, skills, languages, profile, experience, and projects. Use the image (if provided) as the profile photo.\nChoose formal_letter for applications, দরখাস্ত, formal letters, cover letters, requests, complaints, or any correspondence addressed to a specific person or authority. When using formal_letter, you MUST populate the letterMeta object. The body paragraphs go in sections[0].paragraphs as usual.\nChoose formal_administrative_register for attendance, beneficiary, student/patient, field-report, official-record, or grouped register data. Use tables only for genuine comparable row/column data. Keep prose concise and well structured. Do not emit markdown or code.\nChoose business_proposal for pitches, digital marketing strategies, or highly styled project plans. Populate the proposalMeta object.\n\nREFERENCE SKILL:\n${skill}\n\nUSER IMAGES (descriptions only):\n${imageContext || "None"}`;
+    const systemPrompt = `You are a professional Word document architect. Turn the user's brief into a polished, faithful document plan. Choose an appropriate document archetype and layout based on the reference skill. Preserve all facts. Use supplied image DESCRIPTIONS only to decide placement; do not infer image content from filenames, URLs, upload paths, or other metadata. Do not change dates, values, names, or topic. Do not merge, drop, or reorder user data. Return ONLY valid JSON matching this schema:\n{"title":"string","subtitle":"string","documentType":"string","designPreset":"standard_business|formal_administrative_register|formal_letter|professional_cv|business_proposal","metadata":["Label: value"],"letterMeta":{"date":"string","recipientLines":["string"],"subject":"string","salutation":"string","closing":"string","signatory":"string","signatoryTitle":"string","signatoryOrg":"string"},"cvMeta":{"name":"string","title":"string","contact":[{"icon":"phone|email|link","value":"string"}],"education":[{"degree":"string","institution":"string","year":"string"}],"skills":["string"],"languages":["string"],"profile":"string","experience":[{"title":"string","company":"string","date":"string","bullets":["string"]}],"projects":[{"name":"string","description":"string","link":"string"}]},"proposalMeta":{"title":"string","subtitle":"string","preparedFor":"string","preparedBy":"string","date":"string"},"sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"numbered":["string"],"callout":"string","signatures":[{"role":"string","name":"string"}],"table":{"headers":["string"],"rows":[["string"]]},"bigNumberList":[{"number":"string","title":"string","text":"string"}],"dividedList":[{"title":"string","subtitle":"string"}]}],"imagePlacements":[{"imageIndex":1,"afterSection":0,"caption":"string","placement":"wide"}]}\nChoose professional_cv for modern two-column CVs or resumes. When using professional_cv, you MUST populate the cvMeta object with name, title, contact, education, skills, languages, profile, experience, and projects. Use the image (if provided) as the profile photo.\nChoose formal_letter for applications, ржжрж░ржЦрж╛рж╕рзНржд, formal letters, cover letters, requests, complaints, or any correspondence addressed to a specific person or authority. When using formal_letter, you MUST populate the letterMeta object. The body paragraphs go in sections[0].paragraphs as usual.\nChoose formal_administrative_register for attendance, beneficiary, student/patient, field-report, official-record, or grouped register data. Use tables only for genuine comparable row/column data. Keep prose concise and well structured. Do not emit markdown or code.\nChoose business_proposal for pitches, digital marketing strategies, or highly styled project plans. Populate the proposalMeta object.\n\nREFERENCE SKILL:\n${skill}\n\nUSER IMAGES (descriptions only):\n${imageContext || "None"}`;
     const rawPlan = await callAI(systemPrompt, String(content));
     const plan = parseDocumentPlan(rawPlan, content, images.length);
-    const buffer = plan.designPreset === "professional_cv"
-      ? await buildCVDocx(plan, images)
-      : plan.designPreset === "formal_letter"
-        ? await buildLetterDocx(plan, images)
-        : plan.designPreset === "business_proposal"
-          ? await buildProposalDocx(plan, images)
-          : await buildDocxBuffer(plan, images);
+    const buffer =
+      plan.designPreset === "professional_cv"
+        ? await buildCVDocx(plan, images)
+        : plan.designPreset === "formal_letter"
+          ? await buildLetterDocx(plan, images)
+          : plan.designPreset === "business_proposal"
+            ? await buildProposalDocx(plan, images)
+            : await buildDocxBuffer(plan, images);
     fs.writeFileSync(outputPath, buffer);
 
     const debugScriptPath = path.join(
@@ -717,7 +847,7 @@ app.get("/api/download-document/:fileId", (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// AI Integration — 3-Key Failover Pool
+// AI Integration тАФ 3-Key Failover Pool
 // ----------------------------------------------------------------------------
 
 /**
@@ -730,13 +860,18 @@ function getApiKeyPool() {
   for (let i = 1; i <= 50; i++) {
     const k = process.env[`GEMINI_API_KEY_${i}`];
     // Gemini API keys are usually ~39 characters. Require at least 20 to prevent accidental empty/bad values.
-    if (k && typeof k === 'string' && k.trim().length > 20 && !k.includes("PASTE_YOUR_")) {
+    if (
+      k &&
+      typeof k === "string" &&
+      k.trim().length > 20 &&
+      !k.includes("PASTE_YOUR_")
+    ) {
       keys.push(k.trim());
     }
   }
-  // Legacy fallback — still works if someone uses OPENAI_API_KEY directly
+  // Legacy fallback тАФ still works if someone uses OPENAI_API_KEY directly
   const fallback = process.env.OPENAI_API_KEY;
-  if (fallback && typeof fallback === 'string' && fallback.trim().length > 20) {
+  if (fallback && typeof fallback === "string" && fallback.trim().length > 20) {
     keys.push(fallback.trim());
   }
 
@@ -765,7 +900,7 @@ async function tryKeyOnce(apiKey, systemPrompt, userPrompt, base64Images = []) {
     base64Images.forEach((b64) => {
       userContent.push({
         type: "image_url",
-        image_url: { url: `data:image/jpeg;base64,${b64}` }
+        image_url: { url: `data:image/jpeg;base64,${b64}` },
       });
     });
   }
@@ -865,33 +1000,39 @@ async function callAI(systemPrompt, userPrompt, base64Images = []) {
 
   for (let i = 0; i < pool.length; i++) {
     // Use a masked prefix for logs since order is randomized
-    const keyMask = typeof pool[i] === 'string' && pool[i].length > 15 
-      ? pool[i].substring(0, 10) + "..." 
-      : `KeySlot_${i}`;
-      
+    const keyMask =
+      typeof pool[i] === "string" && pool[i].length > 15
+        ? pool[i].substring(0, 10) + "..."
+        : `KeySlot_${i}`;
+
     try {
-      console.log(`🤖 Trying API key (${keyMask})…`);
-      const code = await tryKeyOnce(pool[i], systemPrompt, userPrompt, base64Images);
+      console.log(`ЁЯдЦ Trying API key (${keyMask})тАж`);
+      const code = await tryKeyOnce(
+        pool[i],
+        systemPrompt,
+        userPrompt,
+        base64Images,
+      );
       if (i > 0) {
-        console.log(`✅ API (${keyMask}) succeeded after ${i} failover(s).`);
+        console.log(`тЬЕ API (${keyMask}) succeeded after ${i} failover(s).`);
       }
       return code;
     } catch (err) {
       lastError = err;
       if (isFailoverError(err) && i < pool.length - 1) {
         console.warn(
-          `⚠️  API (${keyMask}) failed (${err.message.slice(0, 80)}). Switching to next key…`,
+          `тЪая╕П  API (${keyMask}) failed (${err.message.slice(0, 80)}). Switching to next keyтАж`,
         );
       } else if (!isFailoverError(err)) {
-        // Non-retryable error (e.g. bad auth, malformed request) — fail fast
+        // Non-retryable error (e.g. bad auth, malformed request) тАФ fail fast
         console.error(
-          `❌ API (${keyMask}) returned a non-retryable error: ${err.message}`,
+          `тЭМ API (${keyMask}) returned a non-retryable error: ${err.message}`,
         );
         throw err;
       } else {
         // Last key also failed
         console.error(
-          `❌ All ${pool.length} API key(s) exhausted. Last error: ${err.message}`,
+          `тЭМ All ${pool.length} API key(s) exhausted. Last error: ${err.message}`,
         );
       }
     }
@@ -1063,19 +1204,29 @@ function parseDocumentPlan(raw, fallbackContent, imageCount) {
 
   plan.title = String(plan.title || "Untitled Document");
   plan.subtitle = String(plan.subtitle || "");
-  const VALID_PRESETS = ["standard_business", "formal_administrative_register", "formal_letter", "professional_cv", "business_proposal"];
+  const VALID_PRESETS = [
+    "standard_business",
+    "formal_administrative_register",
+    "formal_letter",
+    "professional_cv",
+    "business_proposal",
+  ];
   plan.designPreset = VALID_PRESETS.includes(plan.designPreset)
     ? plan.designPreset
     : "standard_business";
   plan.metadata = Array.isArray(plan.metadata)
     ? plan.metadata
-      .map((value) => String(value))
-      .filter(Boolean)
-      .slice(0, 6)
+        .map((value) => String(value))
+        .filter(Boolean)
+        .slice(0, 6)
     : [];
 
   // Preserve letterMeta for formal_letter preset
-  if (plan.designPreset === "formal_letter" && plan.letterMeta && typeof plan.letterMeta === "object") {
+  if (
+    plan.designPreset === "formal_letter" &&
+    plan.letterMeta &&
+    typeof plan.letterMeta === "object"
+  ) {
     plan.letterMeta = {
       date: String(plan.letterMeta.date || ""),
       recipientLines: Array.isArray(plan.letterMeta.recipientLines)
@@ -1089,50 +1240,83 @@ function parseDocumentPlan(raw, fallbackContent, imageCount) {
       signatoryOrg: String(plan.letterMeta.signatoryOrg || ""),
     };
   } else if (plan.designPreset === "formal_letter") {
-    // AI chose formal_letter but forgot letterMeta — provide empty defaults
+    // AI chose formal_letter but forgot letterMeta тАФ provide empty defaults
     plan.letterMeta = {
-      date: "", recipientLines: [], subject: "", salutation: "",
-      closing: "", signatory: "", signatoryTitle: "", signatoryOrg: "",
+      date: "",
+      recipientLines: [],
+      subject: "",
+      salutation: "",
+      closing: "",
+      signatory: "",
+      signatoryTitle: "",
+      signatoryOrg: "",
     };
   }
 
   // Preserve cvMeta for professional_cv preset
-  if (plan.designPreset === "professional_cv" && plan.cvMeta && typeof plan.cvMeta === "object") {
+  if (
+    plan.designPreset === "professional_cv" &&
+    plan.cvMeta &&
+    typeof plan.cvMeta === "object"
+  ) {
     plan.cvMeta = {
       name: String(plan.cvMeta.name || ""),
       title: String(plan.cvMeta.title || ""),
-      contact: Array.isArray(plan.cvMeta.contact) ? plan.cvMeta.contact.map(c => ({
-        icon: String(c.icon || ""),
-        value: String(c.value || "")
-      })) : [],
-      education: Array.isArray(plan.cvMeta.education) ? plan.cvMeta.education.map(e => ({
-        degree: String(e.degree || ""),
-        institution: String(e.institution || ""),
-        year: String(e.year || "")
-      })) : [],
-      skills: Array.isArray(plan.cvMeta.skills) ? plan.cvMeta.skills.map(String) : [],
-      languages: Array.isArray(plan.cvMeta.languages) ? plan.cvMeta.languages.map(String) : [],
+      contact: Array.isArray(plan.cvMeta.contact)
+        ? plan.cvMeta.contact.map((c) => ({
+            icon: String(c.icon || ""),
+            value: String(c.value || ""),
+          }))
+        : [],
+      education: Array.isArray(plan.cvMeta.education)
+        ? plan.cvMeta.education.map((e) => ({
+            degree: String(e.degree || ""),
+            institution: String(e.institution || ""),
+            year: String(e.year || ""),
+          }))
+        : [],
+      skills: Array.isArray(plan.cvMeta.skills)
+        ? plan.cvMeta.skills.map(String)
+        : [],
+      languages: Array.isArray(plan.cvMeta.languages)
+        ? plan.cvMeta.languages.map(String)
+        : [],
       profile: String(plan.cvMeta.profile || ""),
-      experience: Array.isArray(plan.cvMeta.experience) ? plan.cvMeta.experience.map(exp => ({
-        title: String(exp.title || ""),
-        company: String(exp.company || ""),
-        date: String(exp.date || ""),
-        bullets: Array.isArray(exp.bullets) ? exp.bullets.map(String) : []
-      })) : [],
-      projects: Array.isArray(plan.cvMeta.projects) ? plan.cvMeta.projects.map(p => ({
-        name: String(p.name || ""),
-        description: String(p.description || ""),
-        link: String(p.link || "")
-      })) : []
+      experience: Array.isArray(plan.cvMeta.experience)
+        ? plan.cvMeta.experience.map((exp) => ({
+            title: String(exp.title || ""),
+            company: String(exp.company || ""),
+            date: String(exp.date || ""),
+            bullets: Array.isArray(exp.bullets) ? exp.bullets.map(String) : [],
+          }))
+        : [],
+      projects: Array.isArray(plan.cvMeta.projects)
+        ? plan.cvMeta.projects.map((p) => ({
+            name: String(p.name || ""),
+            description: String(p.description || ""),
+            link: String(p.link || ""),
+          }))
+        : [],
     };
   } else if (plan.designPreset === "professional_cv") {
     plan.cvMeta = {
-      name: "", title: "", contact: [], education: [],
-      skills: [], languages: [], profile: "", experience: [], projects: []
+      name: "",
+      title: "",
+      contact: [],
+      education: [],
+      skills: [],
+      languages: [],
+      profile: "",
+      experience: [],
+      projects: [],
     };
   }
 
-  if (plan.designPreset === "business_proposal" && plan.proposalMeta && typeof plan.proposalMeta === "object") {
+  if (
+    plan.designPreset === "business_proposal" &&
+    plan.proposalMeta &&
+    typeof plan.proposalMeta === "object"
+  ) {
     plan.proposalMeta = {
       title: String(plan.proposalMeta.title || ""),
       subtitle: String(plan.proposalMeta.subtitle || ""),
@@ -1142,7 +1326,11 @@ function parseDocumentPlan(raw, fallbackContent, imageCount) {
     };
   } else if (plan.designPreset === "business_proposal") {
     plan.proposalMeta = {
-      title: "", subtitle: "", preparedFor: "", preparedBy: "", date: ""
+      title: "",
+      subtitle: "",
+      preparedFor: "",
+      preparedBy: "",
+      date: "",
     };
   }
 
@@ -1150,17 +1338,17 @@ function parseDocumentPlan(raw, fallbackContent, imageCount) {
     Array.isArray(plan.sections) && plan.sections.length
       ? plan.sections
       : [
-        {
-          heading: "AI Plan Parse Error",
-          paragraphs: [
-            "The AI response could not be parsed into a valid document plan. Please retry with a shorter or more specific request.",
-          ],
-        },
-      ];
+          {
+            heading: "AI Plan Parse Error",
+            paragraphs: [
+              "The AI response could not be parsed into a valid document plan. Please retry with a shorter or more specific request.",
+            ],
+          },
+        ];
   plan.imagePlacements = Array.isArray(plan.imagePlacements)
     ? plan.imagePlacements.filter(
-      (p) => Number(p.imageIndex) >= 1 && Number(p.imageIndex) <= imageCount,
-    )
+        (p) => Number(p.imageIndex) >= 1 && Number(p.imageIndex) <= imageCount,
+      )
     : [];
   return plan;
 }
@@ -1233,14 +1421,25 @@ const AUDIT_THEME = {
   },
 };
 
-const BENGALI_DIGITS = ["০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯"];
+const BENGALI_DIGITS = [
+  "рзж",
+  "рзз",
+  "рзи",
+  "рзй",
+  "рзк",
+  "рзл",
+  "рзм",
+  "рзн",
+  "рзо",
+  "рзп",
+];
 const toBengaliNumeral = (n) =>
   String(n)
     .split("")
     .map((d) => BENGALI_DIGITS[Number(d)] || d)
     .join("");
 const bengaliParenPrefix = (n) => `${toBengaliNumeral(n)})`;
-const bengaliDaariPrefix = (n) => `${toBengaliNumeral(n)}।`;
+const bengaliDaariPrefix = (n) => `${toBengaliNumeral(n)}ред`;
 const subDecimalPrefix = (parent, child, lang = "bn") =>
   lang === "bn"
     ? `${toBengaliNumeral(parent)}.${toBengaliNumeral(child)}`
@@ -1274,11 +1473,7 @@ const gridBorders = (color, size) => ({
   insideVertical: { style: BorderStyle.SINGLE, size, color },
 });
 
-const createDualHeader = (
-  leftText,
-  rightText,
-  opts = {},
-) =>
+const createDualHeader = (leftText, rightText, opts = {}) =>
   new Header({
     children: [
       new Paragraph({
@@ -1300,7 +1495,11 @@ const createDualHeader = (
             font: TOKENS.font,
             size: TOKENS.size.caption,
           }),
-          new TextRun({ text: "\t", font: TOKENS.font, size: TOKENS.size.caption }),
+          new TextRun({
+            text: "\t",
+            font: TOKENS.font,
+            size: TOKENS.size.caption,
+          }),
           new TextRun({
             text: rightText,
             color: opts.textColor || TOKENS.color.accentDark,
@@ -1337,14 +1536,14 @@ const createFooter = (opts = {}) => {
           ...(leftText ? [t(leftText), t(" ")] : []),
           ...(locale === "bn"
             ? [
-                t("পৃষ্ঠা "),
+                t("ржкрзГрж╖рзНржарж╛ "),
                 new TextRun({
                   children: [PageNumber.TOTAL_PAGES],
                   color: TOKENS.color.muted,
                   font: TOKENS.font,
                   size: TOKENS.size.caption,
                 }),
-                t(" এর "),
+                t(" ржПрж░ "),
                 new TextRun({
                   children: [PageNumber.CURRENT],
                   color: TOKENS.color.muted,
@@ -1378,11 +1577,25 @@ const createMetadataTable = (rows, variant = "navyLabel", labelWidthPct = 35) =>
   new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     layout: TableLayoutType.FIXED,
-    borders: variant === "navyLabel" ? gridBorders(AUDIT_THEME.color.grid, 4) : NO_BORDERS,
+    borders:
+      variant === "navyLabel"
+        ? gridBorders(AUDIT_THEME.color.grid, 4)
+        : NO_BORDERS,
     rows: rows.map((row, index) => {
-      const labelFill = variant === "navyLabel" ? AUDIT_THEME.color.labelFill : TOKENS.color.zebraA;
-      const labelColor = variant === "navyLabel" ? AUDIT_THEME.color.labelText : TOKENS.color.ink;
-      const valueFill = variant === "navyLabel" ? (index % 2 === 0 ? AUDIT_THEME.color.zebra : TOKENS.color.white) : TOKENS.color.white;
+      const labelFill =
+        variant === "navyLabel"
+          ? AUDIT_THEME.color.labelFill
+          : TOKENS.color.zebraA;
+      const labelColor =
+        variant === "navyLabel"
+          ? AUDIT_THEME.color.labelText
+          : TOKENS.color.ink;
+      const valueFill =
+        variant === "navyLabel"
+          ? index % 2 === 0
+            ? AUDIT_THEME.color.zebra
+            : TOKENS.color.white
+          : TOKENS.color.white;
       return new TableRow({
         children: [
           new TableCell({
@@ -1503,7 +1716,7 @@ async function loadDocumentImage(image) {
 }
 
 // ----------------------------------------------------------------------------
-// LAYOUT: Formal Letter / Application (দরখাস্ত)
+// LAYOUT: Formal Letter / Application (ржжрж░ржЦрж╛рж╕рзНржд)
 // ----------------------------------------------------------------------------
 async function buildLetterDocx(plan, images) {
   const lm = plan.letterMeta || {};
@@ -1519,19 +1732,17 @@ async function buildLetterDocx(plan, images) {
 
   const children = [];
 
-  // ── Date ──
+  // тФАтФА Date тФАтФА
   if (lm.date) {
     children.push(
       new Paragraph({
         spacing: { after: 300 },
-        children: [
-          docText(lm.date, { bold: true, size: 22 }),
-        ],
+        children: [docText(lm.date, { bold: true, size: 22 })],
       }),
     );
   }
 
-  // ── Recipient Block ──
+  // тФАтФА Recipient Block тФАтФА
   if (Array.isArray(lm.recipientLines) && lm.recipientLines.length) {
     lm.recipientLines.forEach((line) => {
       children.push(
@@ -1544,9 +1755,9 @@ async function buildLetterDocx(plan, images) {
     children.push(new Paragraph({ spacing: { after: 200 } }));
   }
 
-  // ── Subject Line ──
+  // тФАтФА Subject Line тФАтФА
   if (lm.subject) {
-    const subjectLabel = hasBengali ? "বিষয়:" : "Subject:";
+    const subjectLabel = hasBengali ? "ржмрж┐рж╖ржпрж╝:" : "Subject:";
     children.push(
       new Paragraph({
         spacing: { before: 100, after: 200 },
@@ -1566,7 +1777,7 @@ async function buildLetterDocx(plan, images) {
     );
   }
 
-  // ── Salutation ──
+  // тФАтФА Salutation тФАтФА
   if (lm.salutation) {
     children.push(
       new Paragraph({
@@ -1576,10 +1787,13 @@ async function buildLetterDocx(plan, images) {
     );
   }
 
-  // ── Body Paragraphs ──
-  const bodyParagraphs = (plan.sections && plan.sections[0] && Array.isArray(plan.sections[0].paragraphs))
-    ? plan.sections[0].paragraphs
-    : [];
+  // тФАтФА Body Paragraphs тФАтФА
+  const bodyParagraphs =
+    plan.sections &&
+    plan.sections[0] &&
+    Array.isArray(plan.sections[0].paragraphs)
+      ? plan.sections[0].paragraphs
+      : [];
   bodyParagraphs.forEach((p) => {
     children.push(
       new Paragraph({
@@ -1590,7 +1804,7 @@ async function buildLetterDocx(plan, images) {
     );
   });
 
-  // ── Closing ──
+  // тФАтФА Closing тФАтФА
   if (lm.closing) {
     children.push(new Paragraph({ spacing: { after: 80 } }));
     children.push(
@@ -1601,7 +1815,7 @@ async function buildLetterDocx(plan, images) {
     );
   }
 
-  // ── Signature Name (large, stylized) ──
+  // тФАтФА Signature Name (large, stylized) тФАтФА
   if (lm.signatory) {
     children.push(
       new Paragraph({
@@ -1618,22 +1832,26 @@ async function buildLetterDocx(plan, images) {
     );
   }
 
-  // ── Signatory Title ──
+  // тФАтФА Signatory Title тФАтФА
   if (lm.signatoryTitle) {
     children.push(
       new Paragraph({
         spacing: { after: 30 },
-        children: [docText(lm.signatoryTitle, { size: 19, color: TOKENS.color.subink })],
+        children: [
+          docText(lm.signatoryTitle, { size: 19, color: TOKENS.color.subink }),
+        ],
       }),
     );
   }
 
-  // ── Signatory Organization ──
+  // тФАтФА Signatory Organization тФАтФА
   if (lm.signatoryOrg) {
     children.push(
       new Paragraph({
         spacing: { after: 30 },
-        children: [docText(lm.signatoryOrg, { size: 19, color: TOKENS.color.subink })],
+        children: [
+          docText(lm.signatoryOrg, { size: 19, color: TOKENS.color.subink }),
+        ],
       }),
     );
   }
@@ -1642,7 +1860,9 @@ async function buildLetterDocx(plan, images) {
     sections: [
       {
         properties: {
-          page: { margin: { top: 1200, right: 1200, bottom: 1000, left: 1200 } },
+          page: {
+            margin: { top: 1200, right: 1200, bottom: 1000, left: 1200 },
+          },
         },
         footers: {
           default: footer,
@@ -1670,9 +1890,16 @@ async function buildCVDocx(plan, images) {
     return new Paragraph({
       spacing: { before: 200, after: 100 },
       borders: {
-        bottom: { color: "FFFFFF", space: 1, style: BorderStyle.SINGLE, size: 6 },
+        bottom: {
+          color: "FFFFFF",
+          space: 1,
+          style: BorderStyle.SINGLE,
+          size: 6,
+        },
       },
-      children: [docText(text.toUpperCase(), { bold: true, color: "FFFFFF", size: 24 })],
+      children: [
+        docText(text.toUpperCase(), { bold: true, color: "FFFFFF", size: 24 }),
+      ],
     });
   };
 
@@ -1681,9 +1908,16 @@ async function buildCVDocx(plan, images) {
     return new Paragraph({
       spacing: { before: 300, after: 100 },
       borders: {
-        bottom: { color: "1B365D", space: 1, style: BorderStyle.SINGLE, size: 12 },
+        bottom: {
+          color: "1B365D",
+          space: 1,
+          style: BorderStyle.SINGLE,
+          size: 12,
+        },
       },
-      children: [docText(text.toUpperCase(), { bold: true, color: "1B365D", size: 28 })],
+      children: [
+        docText(text.toUpperCase(), { bold: true, color: "1B365D", size: 28 }),
+      ],
     });
   };
 
@@ -1699,7 +1933,7 @@ async function buildCVDocx(plan, images) {
             transformation: { width: 150, height: 150 },
           }),
         ],
-      })
+      }),
     );
   } else {
     leftColChildren.push(new Paragraph({ spacing: { before: 800 } }));
@@ -1708,12 +1942,17 @@ async function buildCVDocx(plan, images) {
   // Left Column: Contact
   if (Array.isArray(cv.contact) && cv.contact.length > 0) {
     leftColChildren.push(leftHeader("CONTACT"));
-    cv.contact.forEach(c => {
+    cv.contact.forEach((c) => {
       leftColChildren.push(
         new Paragraph({
           spacing: { after: 100 },
-          children: [docText(`${c.icon ? c.icon + " " : ""}${c.value}`, { color: "FFFFFF", size: 18 })]
-        })
+          children: [
+            docText(`${c.icon ? c.icon + " " : ""}${c.value}`, {
+              color: "FFFFFF",
+              size: 18,
+            }),
+          ],
+        }),
       );
     });
   }
@@ -1721,20 +1960,24 @@ async function buildCVDocx(plan, images) {
   // Left Column: Education
   if (Array.isArray(cv.education) && cv.education.length > 0) {
     leftColChildren.push(leftHeader("EDUCATION"));
-    cv.education.forEach(e => {
+    cv.education.forEach((e) => {
       leftColChildren.push(
         new Paragraph({
           spacing: { before: 100 },
-          children: [docText(e.year, { color: "FFFFFF", size: 18, bold: true })]
+          children: [
+            docText(e.year, { color: "FFFFFF", size: 18, bold: true }),
+          ],
         }),
         new Paragraph({
           spacing: { before: 50 },
-          children: [docText(e.institution, { color: "FFFFFF", size: 18, bold: true })]
+          children: [
+            docText(e.institution, { color: "FFFFFF", size: 18, bold: true }),
+          ],
         }),
         new Paragraph({
           spacing: { before: 50, after: 100 },
-          children: [docText(`• ${e.degree}`, { color: "FFFFFF", size: 18 })]
-        })
+          children: [docText(`тАв ${e.degree}`, { color: "FFFFFF", size: 18 })],
+        }),
       );
     });
   }
@@ -1742,12 +1985,12 @@ async function buildCVDocx(plan, images) {
   // Left Column: Skills
   if (Array.isArray(cv.skills) && cv.skills.length > 0) {
     leftColChildren.push(leftHeader("SKILLS"));
-    cv.skills.forEach(s => {
+    cv.skills.forEach((s) => {
       leftColChildren.push(
         new Paragraph({
           spacing: { after: 100 },
-          children: [docText(`• ${s}`, { color: "FFFFFF", size: 18 })]
-        })
+          children: [docText(`тАв ${s}`, { color: "FFFFFF", size: 18 })],
+        }),
       );
     });
   }
@@ -1755,12 +1998,12 @@ async function buildCVDocx(plan, images) {
   // Left Column: Languages
   if (Array.isArray(cv.languages) && cv.languages.length > 0) {
     leftColChildren.push(leftHeader("LANGUAGES"));
-    cv.languages.forEach(l => {
+    cv.languages.forEach((l) => {
       leftColChildren.push(
         new Paragraph({
           spacing: { after: 100 },
-          children: [docText(`• ${l}`, { color: "FFFFFF", size: 18 })]
-        })
+          children: [docText(`тАв ${l}`, { color: "FFFFFF", size: 18 })],
+        }),
       );
     });
   }
@@ -1769,12 +2012,14 @@ async function buildCVDocx(plan, images) {
   rightColChildren.push(
     new Paragraph({
       spacing: { before: 400, after: 100 },
-      children: [docText(cv.name || "NAME", { bold: true, size: 56, color: "2C3E50" })]
+      children: [
+        docText(cv.name || "NAME", { bold: true, size: 56, color: "2C3E50" }),
+      ],
     }),
     new Paragraph({
       spacing: { after: 400 },
-      children: [docText(cv.title || "TITLE", { size: 28, color: "7F8C8D" })]
-    })
+      children: [docText(cv.title || "TITLE", { size: 28, color: "7F8C8D" })],
+    }),
   );
 
   // Right Column: Profile
@@ -1784,15 +2029,15 @@ async function buildCVDocx(plan, images) {
       new Paragraph({
         alignment: AlignmentType.JUSTIFIED,
         spacing: { after: 200, line: 300 },
-        children: [docText(cv.profile, { size: 20 })]
-      })
+        children: [docText(cv.profile, { size: 20 })],
+      }),
     );
   }
 
   // Right Column: Experience
   if (Array.isArray(cv.experience) && cv.experience.length > 0) {
     rightColChildren.push(rightHeader("WORK EXPERIENCE"));
-    cv.experience.forEach(exp => {
+    cv.experience.forEach((exp) => {
       rightColChildren.push(
         new Paragraph({
           spacing: { before: 200, after: 50 },
@@ -1800,21 +2045,23 @@ async function buildCVDocx(plan, images) {
           children: [
             docText(exp.title, { bold: true, size: 22 }),
             new TextRun({ text: "\t" }), // Tab
-            docText(exp.date, { size: 18, color: "7F8C8D" })
-          ]
+            docText(exp.date, { size: 18, color: "7F8C8D" }),
+          ],
         }),
         new Paragraph({
           spacing: { after: 100 },
-          children: [docText(exp.company, { size: 20, color: "163A5F", italics: true })]
-        })
+          children: [
+            docText(exp.company, { size: 20, color: "163A5F", italics: true }),
+          ],
+        }),
       );
       if (Array.isArray(exp.bullets)) {
-        exp.bullets.forEach(b => {
+        exp.bullets.forEach((b) => {
           rightColChildren.push(
             new Paragraph({
               spacing: { after: 100 },
-              children: [docText(`• ${b}`, { size: 18 })]
-            })
+              children: [docText(`тАв ${b}`, { size: 18 })],
+            }),
           );
         });
       }
@@ -1824,16 +2071,20 @@ async function buildCVDocx(plan, images) {
   // Right Column: Projects
   if (Array.isArray(cv.projects) && cv.projects.length > 0) {
     rightColChildren.push(rightHeader("PROJECTS"));
-    cv.projects.forEach(p => {
+    cv.projects.forEach((p) => {
       rightColChildren.push(
         new Paragraph({
           spacing: { after: 100 },
           children: [
-            docText(`• ${p.name}`, { bold: true, size: 20 }),
+            docText(`тАв ${p.name}`, { bold: true, size: 20 }),
             docText(` (${p.description})`, { size: 18, color: "7F8C8D" }),
-            docText(p.link ? ` -> ${p.link}` : "", { size: 18, italics: true, color: "163A5F" })
-          ]
-        })
+            docText(p.link ? ` -> ${p.link}` : "", {
+              size: 18,
+              italics: true,
+              color: "163A5F",
+            }),
+          ],
+        }),
       );
     });
   }
@@ -1863,7 +2114,7 @@ async function buildCVDocx(plan, images) {
               bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
               left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
               right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-            }
+            },
           }),
           new TableCell({
             width: { size: 65, type: WidthType.PERCENTAGE },
@@ -1874,11 +2125,11 @@ async function buildCVDocx(plan, images) {
               bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
               left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
               right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-            }
-          })
-        ]
-      })
-    ]
+            },
+          }),
+        ],
+      }),
+    ],
   });
 
   const document = new Document({
@@ -1901,24 +2152,34 @@ async function buildCVDocx(plan, images) {
 
   const children = [];
   const leftColChildren = [];
-  
-  // Left Column Styling Helpers
-  const leftHeading = (text) => new Paragraph({
-    spacing: { before: 240, after: 120 },
-    border: { bottom: { color: "FFFFFF", space: 5, style: BorderStyle.SINGLE, size: 6 } },
-    children: [docText(text, { bold: true, size: 24, color: "FFFFFF" })],
-  });
-  
-  const leftItem = (text, isBold = false) => new Paragraph({
-    spacing: { after: 60 },
-    children: [docText(text, { size: 20, color: "FFFFFF", bold: isBold })],
-  });
 
-  const leftBullet = (text) => new Paragraph({
-    spacing: { after: 60 },
-    indent: { left: 200, hanging: 100 },
-    children: [docText(`• ${text}`, { size: 18, color: "FFFFFF" })],
-  });
+  // Left Column Styling Helpers
+  const leftHeading = (text) =>
+    new Paragraph({
+      spacing: { before: 240, after: 120 },
+      border: {
+        bottom: {
+          color: "FFFFFF",
+          space: 5,
+          style: BorderStyle.SINGLE,
+          size: 6,
+        },
+      },
+      children: [docText(text, { bold: true, size: 24, color: "FFFFFF" })],
+    });
+
+  const leftItem = (text, isBold = false) =>
+    new Paragraph({
+      spacing: { after: 60 },
+      children: [docText(text, { size: 20, color: "FFFFFF", bold: isBold })],
+    });
+
+  const leftBullet = (text) =>
+    new Paragraph({
+      spacing: { after: 60 },
+      indent: { left: 200, hanging: 100 },
+      children: [docText(`тАв ${text}`, { size: 18, color: "FFFFFF" })],
+    });
 
   // Photo
   if (images && images.length > 0) {
@@ -1935,23 +2196,27 @@ async function buildCVDocx(plan, images) {
               type: "jpeg",
             }),
           ],
-        })
+        }),
       );
     }
   }
 
   // Contact
   if (cv.contact && cv.contact.length) {
-    leftColChildren.push(leftHeading(hasBengali ? "যোগাযোগ" : "CONTACT"));
-    cv.contact.forEach(c => {
+    leftColChildren.push(
+      leftHeading(hasBengali ? "ржпрзЛржЧрж╛ржпрзЛржЧ" : "CONTACT"),
+    );
+    cv.contact.forEach((c) => {
       leftColChildren.push(leftItem(c.value));
     });
   }
 
   // Education (Moved to Left)
   if (cv.education && cv.education.length) {
-    leftColChildren.push(leftHeading(hasBengali ? "শিক্ষা" : "EDUCATION"));
-    cv.education.forEach(edu => {
+    leftColChildren.push(
+      leftHeading(hasBengali ? "рж╢рж┐ржХрзНрж╖рж╛" : "EDUCATION"),
+    );
+    cv.education.forEach((edu) => {
       leftColChildren.push(leftItem(edu.year || "", true));
       leftColChildren.push(leftItem(edu.institution, true));
       leftColChildren.push(leftBullet(edu.degree));
@@ -1961,16 +2226,20 @@ async function buildCVDocx(plan, images) {
 
   // Skills
   if (cv.skills && cv.skills.length) {
-    leftColChildren.push(leftHeading(hasBengali ? "দক্ষতা" : "SKILLS"));
-    cv.skills.forEach(s => {
+    leftColChildren.push(
+      leftHeading(hasBengali ? "ржжржХрзНрж╖рждрж╛" : "SKILLS"),
+    );
+    cv.skills.forEach((s) => {
       leftColChildren.push(leftBullet(s));
     });
   }
 
   // Languages
   if (cv.languages && cv.languages.length) {
-    leftColChildren.push(leftHeading(hasBengali ? "ভাষা" : "LANGUAGES"));
-    cv.languages.forEach(l => {
+    leftColChildren.push(
+      leftHeading(hasBengali ? "ржнрж╛рж╖рж╛" : "LANGUAGES"),
+    );
+    cv.languages.forEach((l) => {
       leftColChildren.push(leftBullet(l));
     });
   }
@@ -1978,47 +2247,74 @@ async function buildCVDocx(plan, images) {
   // Right Column Content
   const rightColChildren = [];
 
-  const rightHeading = (text) => new Paragraph({
-    spacing: { before: 240, after: 120 },
-    border: { bottom: { color: "1E3A5F", space: 5, style: BorderStyle.SINGLE, size: 12 } },
-    children: [docText(text, { bold: true, size: 28, color: "1E3A5F" })],
-  });
+  const rightHeading = (text) =>
+    new Paragraph({
+      spacing: { before: 240, after: 120 },
+      border: {
+        bottom: {
+          color: "1E3A5F",
+          space: 5,
+          style: BorderStyle.SINGLE,
+          size: 12,
+        },
+      },
+      children: [docText(text, { bold: true, size: 28, color: "1E3A5F" })],
+    });
 
   // Name & Title
   if (cv.name) {
     rightColChildren.push(
       new Paragraph({
         spacing: { after: 50 },
-        children: [docText(cv.name.toUpperCase(), { bold: true, size: 48, color: "2C3E50" })],
-      })
+        children: [
+          docText(cv.name.toUpperCase(), {
+            bold: true,
+            size: 48,
+            color: "2C3E50",
+          }),
+        ],
+      }),
     );
   }
   if (cv.title) {
     rightColChildren.push(
       new Paragraph({
         spacing: { after: 300 },
-        border: { bottom: { color: "2C3E50", space: 5, style: BorderStyle.SINGLE, size: 6 } },
-        children: [docText(cv.title.toUpperCase(), { size: 24, color: "2C3E50" })],
-      })
+        border: {
+          bottom: {
+            color: "2C3E50",
+            space: 5,
+            style: BorderStyle.SINGLE,
+            size: 6,
+          },
+        },
+        children: [
+          docText(cv.title.toUpperCase(), { size: 24, color: "2C3E50" }),
+        ],
+      }),
     );
   }
 
   // Profile
   if (cv.profile) {
-    rightColChildren.push(rightHeading(hasBengali ? "প্রোফাইল" : "PROFILE"));
+    rightColChildren.push(
+      rightHeading(hasBengali ? "ржкрзНрж░рзЛржлрж╛ржЗрж▓" : "PROFILE"),
+    );
     rightColChildren.push(
       new Paragraph({
         alignment: AlignmentType.JUSTIFIED,
         spacing: { after: 200 },
         children: [docText(cv.profile, { size: 20 })],
-      })
+      }),
     );
   }
 
   // Experience
   if (cv.experience && cv.experience.length) {
-    rightColChildren.push(rightHeading(hasBengali ? "অভিজ্ঞতা" : "WORK EXPERIENCE"));
-    cv.experience.forEach(exp => {
+    rightColChildren.push(
+      rightHeading(hasBengali ? "ржЕржнрж┐ржЬрзНржЮрждрж╛" : "WORK EXPERIENCE"),
+    );
+    cv.experience.forEach((exp) => {
       rightColChildren.push(
         new Paragraph({
           spacing: { after: 50 },
@@ -2028,28 +2324,34 @@ async function buildCVDocx(plan, images) {
             new TextRun({
               text: `\t${exp.date || ""}`,
               size: 20,
-              color: "2C3E50"
-            })
+              color: "2C3E50",
+            }),
           ],
-        })
+        }),
       );
       if (exp.company) {
         rightColChildren.push(
           new Paragraph({
             spacing: { after: 80 },
-            children: [docText(exp.company, { size: 22, color: "2980B9", underline: {} })],
-          })
+            children: [
+              docText(exp.company, {
+                size: 22,
+                color: "2980B9",
+                underline: {},
+              }),
+            ],
+          }),
         );
       }
       if (exp.bullets && exp.bullets.length) {
-        exp.bullets.forEach(b => {
+        exp.bullets.forEach((b) => {
           rightColChildren.push(
             new Paragraph({
               spacing: { after: 60 },
               indent: { left: 200, hanging: 100 },
               alignment: AlignmentType.JUSTIFIED,
-              children: [docText(`• ${b}`, { size: 20 })],
-            })
+              children: [docText(`тАв ${b}`, { size: 20 })],
+            }),
           );
         });
       }
@@ -2059,25 +2361,36 @@ async function buildCVDocx(plan, images) {
 
   // Projects
   if (cv.projects && cv.projects.length) {
-    rightColChildren.push(rightHeading(hasBengali ? "প্রজেক্টসমূহ" : "PROJECTS"));
-    cv.projects.forEach(proj => {
+    rightColChildren.push(
+      rightHeading(
+        hasBengali ? "ржкрзНрж░ржЬрзЗржХрзНржЯрж╕ржорзВрж╣" : "PROJECTS",
+      ),
+    );
+    cv.projects.forEach((proj) => {
       rightColChildren.push(
         new Paragraph({
           spacing: { after: 50 },
           tabStops: [{ type: TabStopType.RIGHT, position: 7500 }],
           children: [
             docText(proj.name, { bold: true, size: 22, color: "2C3E50" }),
-            proj.link ? new TextRun({ text: `\t-> ${proj.link}`, size: 18, color: "2980B9", underline: {} }) : new TextRun({ text: "" })
+            proj.link
+              ? new TextRun({
+                  text: `\t-> ${proj.link}`,
+                  size: 18,
+                  color: "2980B9",
+                  underline: {},
+                })
+              : new TextRun({ text: "" }),
           ],
-        })
+        }),
       );
       if (proj.description) {
         rightColChildren.push(
           new Paragraph({
             spacing: { after: 100 },
             indent: { left: 200 },
-            children: [docText(`• ${proj.description}`, { size: 20 })],
-          })
+            children: [docText(`тАв ${proj.description}`, { size: 20 })],
+          }),
         );
       }
       rightColChildren.push(new Paragraph({ spacing: { after: 100 } }));
@@ -2141,12 +2454,20 @@ const createProposalHeader = (leftText, rightText) =>
   new docx.Header({
     children: [
       new docx.Paragraph({
-        tabStops: [{ type: docx.TabStopType.RIGHT, position: docx.TabStopPosition.MAX }],
+        tabStops: [
+          { type: docx.TabStopType.RIGHT, position: docx.TabStopPosition.MAX },
+        ],
         spacing: { after: 400 },
         children: [
-          docText(leftText, { color: PROPOSAL_THEME.color.header, font: PROPOSAL_THEME.font }),
+          docText(leftText, {
+            color: PROPOSAL_THEME.color.header,
+            font: PROPOSAL_THEME.font,
+          }),
           docText("\t", { font: PROPOSAL_THEME.font }),
-          docText(rightText, { color: PROPOSAL_THEME.color.header, font: PROPOSAL_THEME.font }),
+          docText(rightText, {
+            color: PROPOSAL_THEME.color.header,
+            font: PROPOSAL_THEME.font,
+          }),
         ],
       }),
     ],
@@ -2156,11 +2477,24 @@ const createProposalCover = (pm) => [
   new docx.Paragraph({ spacing: { before: 1600 }, children: [docText("")] }),
   new docx.Paragraph({
     spacing: { after: 100 },
-    children: [docText(pm.title || "Project Proposal ↗", { bold: true, size: 120, color: PROPOSAL_THEME.color.heading, font: PROPOSAL_THEME.font })],
+    children: [
+      docText(pm.title || "Project Proposal тЖЧ", {
+        bold: true,
+        size: 120,
+        color: PROPOSAL_THEME.color.heading,
+        font: PROPOSAL_THEME.font,
+      }),
+    ],
   }),
   new docx.Paragraph({
     spacing: { after: 800 },
-    children: [docText(pm.subtitle || "Digital Marketing Transformation Initiative", { size: 52, color: PROPOSAL_THEME.color.accent, font: PROPOSAL_THEME.font })],
+    children: [
+      docText(pm.subtitle || "Digital Marketing Transformation Initiative", {
+        size: 52,
+        color: PROPOSAL_THEME.color.accent,
+        font: PROPOSAL_THEME.font,
+      }),
+    ],
   }),
   new docx.Table({
     width: { size: 100, type: docx.WidthType.PERCENTAGE },
@@ -2169,36 +2503,72 @@ const createProposalCover = (pm) => [
       bottom: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
       left: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
       right: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
-      insideVertical: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      insideVertical: {
+        style: docx.BorderStyle.NONE,
+        size: 0,
+        color: "FFFFFF",
+      },
     },
     rows: [
       new docx.TableRow({
         children: [
           new docx.TableCell({
             width: { size: 50, type: docx.WidthType.PERCENTAGE },
-            shading: { fill: PROPOSAL_THEME.color.heading, type: docx.ShadingType.CLEAR },
+            shading: {
+              fill: PROPOSAL_THEME.color.heading,
+              type: docx.ShadingType.CLEAR,
+            },
             margins: { top: 600, bottom: 600, left: 600, right: 600 },
             children: [
               new docx.Paragraph({
                 spacing: { after: 160 },
-                children: [docText("Prepared by :", { color: "FFFFFF", size: 28, font: PROPOSAL_THEME.font })],
+                children: [
+                  docText("Prepared by :", {
+                    color: "FFFFFF",
+                    size: 28,
+                    font: PROPOSAL_THEME.font,
+                  }),
+                ],
               }),
               new docx.Paragraph({
-                children: [docText(pm.preparedBy || "Avery Davis", { bold: true, color: "FFFFFF", size: 40, font: PROPOSAL_THEME.font })],
+                children: [
+                  docText(pm.preparedBy || "Avery Davis", {
+                    bold: true,
+                    color: "FFFFFF",
+                    size: 40,
+                    font: PROPOSAL_THEME.font,
+                  }),
+                ],
               }),
             ],
           }),
           new docx.TableCell({
             width: { size: 50, type: docx.WidthType.PERCENTAGE },
-            shading: { fill: PROPOSAL_THEME.color.heading, type: docx.ShadingType.CLEAR },
+            shading: {
+              fill: PROPOSAL_THEME.color.heading,
+              type: docx.ShadingType.CLEAR,
+            },
             margins: { top: 600, bottom: 600, left: 600, right: 600 },
             children: [
               new docx.Paragraph({
                 spacing: { after: 160 },
-                children: [docText("Prepared for :", { color: "FFFFFF", size: 28, font: PROPOSAL_THEME.font })],
+                children: [
+                  docText("Prepared for :", {
+                    color: "FFFFFF",
+                    size: 28,
+                    font: PROPOSAL_THEME.font,
+                  }),
+                ],
               }),
               new docx.Paragraph({
-                children: [docText(pm.preparedFor || "Wardiere. Inc", { bold: true, color: "FFFFFF", size: 40, font: PROPOSAL_THEME.font })],
+                children: [
+                  docText(pm.preparedFor || "Wardiere. Inc", {
+                    bold: true,
+                    color: "FFFFFF",
+                    size: 40,
+                    font: PROPOSAL_THEME.font,
+                  }),
+                ],
               }),
             ],
           }),
@@ -2213,8 +2583,15 @@ const createProposalTOC = (sections) => {
   children.push(
     new docx.Paragraph({
       spacing: { before: 800, after: 1200 },
-      children: [docText("Table of Contents", { bold: true, size: 80, color: "FFFFFF", font: PROPOSAL_THEME.font })],
-    })
+      children: [
+        docText("Table of Contents", {
+          bold: true,
+          size: 80,
+          color: "FFFFFF",
+          font: PROPOSAL_THEME.font,
+        }),
+      ],
+    }),
   );
 
   const headingSections = sections.filter((sec) => sec.heading);
@@ -2225,13 +2602,31 @@ const createProposalTOC = (sections) => {
       new docx.Paragraph({
         spacing: { before: 300, after: 300 },
         tabStops: [{ type: docx.TabStopType.LEFT, position: 1000 }],
-        ...(isLast ? {} : { border: { bottom: { color: "FFFFFF", style: docx.BorderStyle.SINGLE, size: 6 } } }),
+        ...(isLast
+          ? {}
+          : {
+              border: {
+                bottom: {
+                  color: "FFFFFF",
+                  style: docx.BorderStyle.SINGLE,
+                  size: 6,
+                },
+              },
+            }),
         children: [
-          docText(numStr, { size: 40, color: PROPOSAL_THEME.color.accent, font: PROPOSAL_THEME.font }),
+          docText(numStr, {
+            size: 40,
+            color: PROPOSAL_THEME.color.accent,
+            font: PROPOSAL_THEME.font,
+          }),
           docText("\t", { font: PROPOSAL_THEME.font }),
-          docText(sec.heading, { size: 40, color: "FFFFFF", font: PROPOSAL_THEME.font }),
+          docText(sec.heading, {
+            size: 40,
+            color: "FFFFFF",
+            font: PROPOSAL_THEME.font,
+          }),
         ],
-      })
+      }),
     );
   });
 
@@ -2247,7 +2642,10 @@ const createProposalTOC = (sections) => {
       new docx.TableRow({
         children: [
           new docx.TableCell({
-            shading: { fill: PROPOSAL_THEME.color.heading, type: docx.ShadingType.CLEAR },
+            shading: {
+              fill: PROPOSAL_THEME.color.heading,
+              type: docx.ShadingType.CLEAR,
+            },
             margins: { top: 1200, bottom: 4000, left: 600, right: 600 },
             children,
           }),
@@ -2261,15 +2659,34 @@ const createBigNumberList = (items) =>
   items.flatMap((item) => [
     new docx.Paragraph({
       spacing: { before: 400, after: 80 },
-      children: [docText(item.number || "", { size: 90, color: PROPOSAL_THEME.color.accent, font: PROPOSAL_THEME.font })],
+      children: [
+        docText(item.number || "", {
+          size: 90,
+          color: PROPOSAL_THEME.color.accent,
+          font: PROPOSAL_THEME.font,
+        }),
+      ],
     }),
     new docx.Paragraph({
       spacing: { after: 160 },
-      children: [docText(item.title || "", { bold: true, size: 44, color: PROPOSAL_THEME.color.heading, font: PROPOSAL_THEME.font })],
+      children: [
+        docText(item.title || "", {
+          bold: true,
+          size: 44,
+          color: PROPOSAL_THEME.color.heading,
+          font: PROPOSAL_THEME.font,
+        }),
+      ],
     }),
     new docx.Paragraph({
       spacing: { after: 200 },
-      children: [docText(item.text || "", { size: 28, color: PROPOSAL_THEME.color.subink, font: PROPOSAL_THEME.font })],
+      children: [
+        docText(item.text || "", {
+          size: 28,
+          color: PROPOSAL_THEME.color.subink,
+          font: PROPOSAL_THEME.font,
+        }),
+      ],
     }),
   ]);
 
@@ -2278,14 +2695,30 @@ const createDividedList = (items) =>
     new docx.Paragraph({
       spacing: { before: 300, after: 120 },
       children: [
-        docText("→  ", { bold: true, size: 36, color: PROPOSAL_THEME.color.heading, font: PROPOSAL_THEME.font }),
-        docText(item.title || "", { bold: true, size: 36, color: PROPOSAL_THEME.color.heading, font: PROPOSAL_THEME.font }),
+        docText("тЖТ  ", {
+          bold: true,
+          size: 36,
+          color: PROPOSAL_THEME.color.heading,
+          font: PROPOSAL_THEME.font,
+        }),
+        docText(item.title || "", {
+          bold: true,
+          size: 36,
+          color: PROPOSAL_THEME.color.heading,
+          font: PROPOSAL_THEME.font,
+        }),
       ],
     }),
     new docx.Paragraph({
       spacing: { after: 200 },
       indent: { left: 600 },
-      children: [docText(item.subtitle || "", { size: 28, color: PROPOSAL_THEME.color.subink, font: PROPOSAL_THEME.font })],
+      children: [
+        docText(item.subtitle || "", {
+          size: 28,
+          color: PROPOSAL_THEME.color.subink,
+          font: PROPOSAL_THEME.font,
+        }),
+      ],
     }),
     new docx.Paragraph({
       border: {
@@ -2301,7 +2734,7 @@ const createDividedList = (items) =>
 
 async function buildProposalDocx(plan, images) {
   const pm = plan.proposalMeta || {};
-  
+
   const imageData = await Promise.all(images.map(loadDocumentImage));
   const placedAfter = new Map();
   (plan.imagePlacements || []).forEach((p) => {
@@ -2314,7 +2747,10 @@ async function buildProposalDocx(plan, images) {
     const idx = Number(placement.imageIndex) - 1;
     const data = imageData[idx];
     if (!data || !Buffer.isBuffer(data) || data.length === 0) return [];
-    const mime = data.length > 12 && data[0] === 0xff && data[1] === 0xd8 ? "image/jpeg" : "image/png";
+    const mime =
+      data.length > 12 && data[0] === 0xff && data[1] === 0xd8
+        ? "image/jpeg"
+        : "image/png";
     return [
       new docx.Paragraph({
         alignment: docx.AlignmentType.CENTER,
@@ -2334,7 +2770,7 @@ async function buildProposalDocx(plan, images) {
 
   children.push(...createProposalCover(pm));
   children.push(new docx.Paragraph({ children: [new docx.PageBreak()] }));
-  
+
   children.push(createProposalTOC(plan.sections || []));
   children.push(new docx.Paragraph({ children: [new docx.PageBreak()] }));
 
@@ -2346,13 +2782,20 @@ async function buildProposalDocx(plan, images) {
 
   (plan.sections || []).forEach((sec, idx) => {
     const secId = idx + 1;
-    
+
     if (sec.heading) {
       children.push(
         new docx.Paragraph({
           spacing: { before: 600, after: 300 },
-          children: [docText(sec.heading, { bold: true, size: 72, color: PROPOSAL_THEME.color.heading, font: PROPOSAL_THEME.font })],
-        })
+          children: [
+            docText(sec.heading, {
+              bold: true,
+              size: 72,
+              color: PROPOSAL_THEME.color.heading,
+              font: PROPOSAL_THEME.font,
+            }),
+          ],
+        }),
       );
     }
 
@@ -2361,8 +2804,14 @@ async function buildProposalDocx(plan, images) {
         children.push(
           new docx.Paragraph({
             spacing: { after: 200 },
-            children: [docText(p, { size: 26, color: "000000", font: PROPOSAL_THEME.font })],
-          })
+            children: [
+              docText(p, {
+                size: 26,
+                color: "000000",
+                font: PROPOSAL_THEME.font,
+              }),
+            ],
+          }),
         );
       });
     }
@@ -2374,7 +2823,7 @@ async function buildProposalDocx(plan, images) {
     if (sec.dividedList) {
       children.push(...createDividedList(sec.dividedList));
     }
-    
+
     const table = sec.table;
     if (
       table &&
@@ -2391,8 +2840,16 @@ async function buildProposalDocx(plan, images) {
             bottom: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
             left: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
             right: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
-            insideVertical: { style: docx.BorderStyle.NONE, size: 0, color: "FFFFFF" },
-            insideHorizontal: { style: docx.BorderStyle.SINGLE, size: 6, color: PROPOSAL_THEME.color.rule },
+            insideVertical: {
+              style: docx.BorderStyle.NONE,
+              size: 0,
+              color: "FFFFFF",
+            },
+            insideHorizontal: {
+              style: docx.BorderStyle.SINGLE,
+              size: 6,
+              color: PROPOSAL_THEME.color.rule,
+            },
           },
           rows: [
             new docx.TableRow({
@@ -2403,12 +2860,21 @@ async function buildProposalDocx(plan, images) {
                     shading: { fill: "FFFFFF", type: docx.ShadingType.CLEAR },
                     margins: { top: 200, bottom: 200, left: 120, right: 120 },
                     borders: {
-                      bottom: { style: docx.BorderStyle.SINGLE, size: 12, color: PROPOSAL_THEME.color.heading },
+                      bottom: {
+                        style: docx.BorderStyle.SINGLE,
+                        size: 12,
+                        color: PROPOSAL_THEME.color.heading,
+                      },
                     },
                     children: [
                       new docx.Paragraph({
                         children: [
-                          docText(h, { bold: true, color: PROPOSAL_THEME.color.accent, size: 28, font: PROPOSAL_THEME.font }),
+                          docText(h, {
+                            bold: true,
+                            color: PROPOSAL_THEME.color.accent,
+                            size: 28,
+                            font: PROPOSAL_THEME.font,
+                          }),
                         ],
                       }),
                     ],
@@ -2421,15 +2887,23 @@ async function buildProposalDocx(plan, images) {
                   children: table.headers.map(
                     (_, c) =>
                       new docx.TableCell({
-                        shading: { fill: "FFFFFF", type: docx.ShadingType.CLEAR },
-                        margins: { top: 180, bottom: 180, left: 120, right: 120 },
+                        shading: {
+                          fill: "FFFFFF",
+                          type: docx.ShadingType.CLEAR,
+                        },
+                        margins: {
+                          top: 180,
+                          bottom: 180,
+                          left: 120,
+                          right: 120,
+                        },
                         children: [
                           new docx.Paragraph({
                             children: [
                               docText(Array.isArray(row) ? row[c] || "" : "", {
                                 size: 24,
                                 color: "000000",
-                                font: PROPOSAL_THEME.font
+                                font: PROPOSAL_THEME.font,
                               }),
                             ],
                           }),
@@ -2456,7 +2930,10 @@ async function buildProposalDocx(plan, images) {
       {
         properties: {},
         headers: {
-          default: createProposalHeader(pm.preparedBy || "Liceria Corporate", pm.date || "June 2030"),
+          default: createProposalHeader(
+            pm.preparedBy || "Liceria Corporate",
+            pm.date || "June 2030",
+          ),
         },
         children,
       },
@@ -2528,18 +3005,18 @@ async function buildDocxBuffer(plan, images) {
       "";
     const captionParagraph = captionText
       ? [
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 180 },
-          children: [
-            docText(captionText, {
-              size: 17,
-              italics: true,
-              color: "64748B",
-            }),
-          ],
-        }),
-      ]
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 180 },
+            children: [
+              docText(captionText, {
+                size: 17,
+                italics: true,
+                color: "64748B",
+              }),
+            ],
+          }),
+        ]
       : [];
 
     switch (placement.placement) {
@@ -2658,7 +3135,7 @@ async function buildDocxBuffer(plan, images) {
     const rows = [];
     (Array.isArray(plan.metadata) ? plan.metadata : []).forEach((entry) => {
       if (!entry || typeof entry !== "string") return;
-      const parts = entry.split(/[:：]/).map((part) => part.trim());
+      const parts = entry.split(/[:я╝Ъ]/).map((part) => part.trim());
       if (parts.length >= 2) {
         rows.push({ label: parts[0], value: parts.slice(1).join(": ") });
       }
@@ -2668,7 +3145,9 @@ async function buildDocxBuffer(plan, images) {
 
   const metadataRows = parseMetadataRows();
   const dateRow = metadataRows.find((row) =>
-    /তারিখ|সময়কাল|সময়কাল|শুরু|শেষ|date|period|duration/i.test(row.label),
+    /рждрж╛рж░рж┐ржЦ|рж╕ржоржпрж╝ржХрж╛рж▓|рж╕ржоржпрж╝ржХрж╛рж▓|рж╢рзБрж░рзБ|рж╢рзЗрж╖|date|period|duration/i.test(
+      row.label,
+    ),
   );
   const hasBengaliText = /[\u0980-\u09FF]/.test(
     `${plan.title || ""}${plan.subtitle || ""}${plan.documentType || ""}${metadataRows
@@ -2678,35 +3157,38 @@ async function buildDocxBuffer(plan, images) {
 
   const header = dateRow
     ? createDualHeader(
-      plan.title || plan.documentType || "AI Document",
-      dateRow.value,
-      {
-        textColor: AUDIT_THEME.color.header,
-        ruleColor: AUDIT_THEME.color.header,
-      },
-    )
+        plan.title || plan.documentType || "AI Document",
+        dateRow.value,
+        {
+          textColor: AUDIT_THEME.color.header,
+          ruleColor: AUDIT_THEME.color.header,
+        },
+      )
     : new Header({
-      children: [
-        new Paragraph({
-          alignment: AlignmentType.RIGHT,
-          children: [
-            docText(plan.documentType || plan.title || "AI Document", {
-              size: TOKENS.size.caption,
-              color: TOKENS.color.muted,
-            }),
-          ],
-        }),
-      ],
-    });
+        children: [
+          new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            children: [
+              docText(plan.documentType || plan.title || "AI Document", {
+                size: TOKENS.size.caption,
+                color: TOKENS.color.muted,
+              }),
+            ],
+          }),
+        ],
+      });
 
   const footer = createFooter({ locale: hasBengaliText ? "bn" : "en" });
 
   const children = [];
   if (metadataRows.length) {
     children.push(
-      createCenteredHeading("প্রতিবেদনের সারাংশঃ", {
-        color: AUDIT_THEME.color.summaryHeading,
-      }),
+      createCenteredHeading(
+        "ржкрзНрж░рждрж┐ржмрзЗржжржирзЗрж░ рж╕рж╛рж░рж╛ржВрж╢ржГ",
+        {
+          color: AUDIT_THEME.color.summaryHeading,
+        },
+      ),
     );
     children.push(createMetadataTable(metadataRows, "navyLabel"));
     children.push(new Paragraph({ spacing: { after: 220 } }));
@@ -2808,8 +3290,16 @@ async function buildDocxBuffer(plan, images) {
             bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
             left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
             right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-            insideHorizontal: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-            insideVertical: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+            insideHorizontal: {
+              style: BorderStyle.NONE,
+              size: 0,
+              color: "FFFFFF",
+            },
+            insideVertical: {
+              style: BorderStyle.NONE,
+              size: 0,
+              color: "FFFFFF",
+            },
           },
           rows: section.signatures.map(
             (sig) =>
@@ -2819,34 +3309,109 @@ async function buildDocxBuffer(plan, images) {
                     width: { size: 20, type: WidthType.PERCENTAGE },
                     margins: { top: 120, bottom: 120 },
                     borders: {
-                      top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                      top: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      bottom: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      left: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      right: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
                     },
-                    children: [new Paragraph({ children: [docText(sig.role || "", { size: 21, color: "000000" })] })],
+                    children: [
+                      new Paragraph({
+                        children: [
+                          docText(sig.role || "", {
+                            size: 21,
+                            color: "000000",
+                          }),
+                        ],
+                      }),
+                    ],
                   }),
                   new TableCell({
                     width: { size: 45, type: WidthType.PERCENTAGE },
                     margins: { top: 120, bottom: 120 },
                     borders: {
-                      top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                      top: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      bottom: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      left: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      right: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
                     },
-                    children: [new Paragraph({ children: [docText(sig.name || "", { size: 21, color: "000000" })] })],
+                    children: [
+                      new Paragraph({
+                        children: [
+                          docText(sig.name || "", {
+                            size: 21,
+                            color: "000000",
+                          }),
+                        ],
+                      }),
+                    ],
                   }),
                   new TableCell({
                     width: { size: 35, type: WidthType.PERCENTAGE },
                     margins: { top: 120, bottom: 120 },
                     borders: {
-                      top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                      right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                      top: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      bottom: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      left: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
+                      right: {
+                        style: BorderStyle.NONE,
+                        size: 0,
+                        color: "FFFFFF",
+                      },
                     },
-                    children: [new Paragraph({ children: [docText("______________________", { size: 21, color: "000000" })] })],
+                    children: [
+                      new Paragraph({
+                        children: [
+                          docText("______________________", {
+                            size: 21,
+                            color: "000000",
+                          }),
+                        ],
+                      }),
+                    ],
                   }),
                 ],
               }),
@@ -2959,14 +3524,14 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection:", reason);
 });
 
-// Start Server — only call app.listen() when run directly via CLI.
+// Start Server тАФ only call app.listen() when run directly via CLI.
 // On cPanel / Phusion Passenger the host manages the port; Passenger
 // imports this module and expects module.exports = app.
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`🚀 SlideForge server running at http://localhost:${PORT}`);
+    console.log(`ЁЯЪА SlideForge server running at http://localhost:${PORT}`);
     console.log(
-      `🤖 Configured to use AI API: ${process.env.OPENAI_BASE_URL} (Model: ${process.env.OPENAI_MODEL})`,
+      `ЁЯдЦ Configured to use AI API: ${process.env.OPENAI_BASE_URL} (Model: ${process.env.OPENAI_MODEL})`,
     );
   });
 }

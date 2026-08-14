@@ -15,6 +15,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/auth.css" />
     <link rel="stylesheet" href="/data-extractor.css" />
   </head>
 
@@ -84,7 +85,8 @@
             <span class="gradient-text">from anywhere.</span>
           </h1>
           <p class="de-subtitle">
-            Upload images, PDFs, or use your camera to pull out text, tables, and lists exactly how you want them formatted.
+            Upload images, PDFs, or use your camera to pull out text, tables,
+            and lists exactly how you want them formatted.
           </p>
         </div>
 
@@ -96,7 +98,9 @@
               <span class="de-step-badge">Step 1 of 2</span>
             </div>
             <div class="de-card-body">
-              <label class="de-label">What should the AI do with this data?</label>
+              <label class="de-label"
+                >What should the AI do with this data?</label
+              >
               <textarea
                 id="userInput"
                 class="de-textarea"
@@ -117,15 +121,46 @@
               <span class="de-step-badge">Step 2 of 2</span>
             </div>
             <div class="de-card-body">
-              <p class="de-file-desc">Upload documents or snap a photo. We accept PDF, JPG, PNG, WebP.</p>
+              <p class="de-file-desc">
+                Upload documents or snap a photo. We accept PDF, JPG, PNG, WebP.
+              </p>
               <div class="de-upload-btns">
                 <label class="de-btn-upload">
-                  <input type="file" id="fileInput" multiple accept="image/*,application/pdf" style="display:none;" />
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                  <input
+                    type="file"
+                    id="fileInput"
+                    multiple
+                    accept="image/*,application/pdf"
+                    style="display: none"
+                  />
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
                   Upload File(s)
                 </label>
                 <button type="button" class="de-btn-upload" id="cameraBtn">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path
+                      d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
+                    ></path>
+                    <circle cx="12" cy="13" r="4"></circle>
+                  </svg>
                   Use Camera
                 </button>
               </div>
@@ -135,8 +170,16 @@
                 <div class="camera-container">
                   <video id="cameraVideo" autoplay playsinline></video>
                   <div class="camera-actions">
-                    <button type="button" id="captureBtn" class="btn-primary">Capture</button>
-                    <button type="button" id="closeCameraBtn" class="de-btn-upload">Close</button>
+                    <button type="button" id="captureBtn" class="btn-primary">
+                      Capture
+                    </button>
+                    <button
+                      type="button"
+                      id="closeCameraBtn"
+                      class="de-btn-upload"
+                    >
+                      Close
+                    </button>
                   </div>
                 </div>
               </div>
@@ -150,10 +193,27 @@
         <div class="de-action-bar" id="actionPanel">
           <button id="generateBtn" class="de-extract-btn">
             <span class="de-extract-btn-content" id="btnContent">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polygon
+                  points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"
+                ></polygon>
+              </svg>
               Extract Information
             </span>
-            <span class="de-extract-btn-loading" id="btnLoading" style="display: none">
+            <span
+              class="de-extract-btn-loading"
+              id="btnLoading"
+              style="display: none"
+            >
               <div class="de-spinner"></div>
               Processing...
             </span>
@@ -163,26 +223,60 @@
     </div>
 
     <!-- RESULTS SECTION (hidden until results are ready) -->
-    <div class="de-results-section" id="resultSection" style="display: none;">
+    <div class="de-results-section" id="resultSection" style="display: none">
       <div class="de-results-wrapper">
         <!-- Results Header -->
         <div class="de-results-header">
           <div class="de-results-header-left">
             <div class="de-results-icon">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
             </div>
             <div>
               <h2 class="de-results-title">Data Extracted Successfully</h2>
-              <p class="de-results-subtitle">Your extracted content is displayed below</p>
+              <p class="de-results-subtitle">
+                Your extracted content is displayed below
+              </p>
             </div>
           </div>
           <div class="de-results-header-actions">
             <button class="de-copy-btn" id="copyBtn">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path
+                  d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                ></path>
+              </svg>
               <span id="copyBtnText">Copy All</span>
             </button>
             <button class="de-new-btn" id="extractAnotherBtn">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <polyline points="1 4 1 10 7 10"></polyline>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+              </svg>
               Extract Another
             </button>
           </div>
@@ -196,19 +290,38 @@
     </div>
 
     <!-- ERROR SECTION (hidden until error) -->
-    <div class="de-error-section" id="errorSection" style="display: none;">
+    <div class="de-error-section" id="errorSection" style="display: none">
       <div class="de-error-wrapper">
         <div class="de-error-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#EF4444" stroke-width="2">
+          <svg
+            width="48"
+            height="48"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#EF4444"
+            stroke-width="2"
+          >
             <circle cx="12" cy="12" r="10" />
             <line x1="12" y1="8" x2="12" y2="12" />
             <line x1="12" y1="16" x2="12.01" y2="16" />
           </svg>
         </div>
         <h2 class="de-error-title">Extraction Failed</h2>
-        <p class="de-error-msg" id="errorMessage">Something went wrong. Please try again.</p>
+        <p class="de-error-msg" id="errorMessage">
+          Something went wrong. Please try again.
+        </p>
         <button class="de-new-btn" id="errorRetryBtn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
           Try Again
         </button>
       </div>
@@ -219,6 +332,7 @@
     </footer>
 
     <script src="/showdown.min.js"></script>
+    <script src="/auth.js"></script>
     <script src="/data-extractor.js"></script>
 
     <!-- Neural Network Animation Script -->
@@ -227,7 +341,10 @@
         const canvas = document.getElementById("neuralCanvas");
         if (!canvas) return;
         const ctx = canvas.getContext("2d");
-        let W, H, nodes = [], animId;
+        let W,
+          H,
+          nodes = [],
+          animId;
         function resize() {
           W = canvas.width = window.innerWidth;
           H = canvas.height = window.innerHeight;
@@ -256,7 +373,12 @@
               const dist = Math.sqrt(dx * dx + dy * dy);
               if (dist < maxDist) {
                 const alpha = (1 - dist / maxDist) * 0.18;
-                const grad = ctx.createLinearGradient(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y);
+                const grad = ctx.createLinearGradient(
+                  nodes[i].x,
+                  nodes[i].y,
+                  nodes[j].x,
+                  nodes[j].y,
+                );
                 grad.addColorStop(0, `rgba(99,102,241,${alpha})`);
                 grad.addColorStop(0.5, `rgba(168,85,247,${alpha * 0.7})`);
                 grad.addColorStop(1, `rgba(236,72,153,${alpha})`);
@@ -270,7 +392,14 @@
             }
           }
           nodes.forEach((n) => {
-            const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 2.5);
+            const grad = ctx.createRadialGradient(
+              n.x,
+              n.y,
+              0,
+              n.x,
+              n.y,
+              n.r * 2.5,
+            );
             grad.addColorStop(0, `rgba(139,92,246,${n.opacity})`);
             grad.addColorStop(1, `rgba(99,102,241,0)`);
             ctx.beginPath();
