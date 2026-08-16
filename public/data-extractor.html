@@ -165,64 +165,6 @@
                 </button>
               </div>
 
-              <!-- Camera Modal -->
-              <div id="cameraModal" class="camera-modal hidden">
-                <div class="camera-modal-overlay"></div>
-                <div class="camera-container">
-                  <div class="camera-header">
-                    <h2 class="camera-title">📸 Capture Document</h2>
-                    <button
-                      type="button"
-                      id="closeCameraBtn"
-                      class="camera-close-btn"
-                      title="Close camera"
-                    >
-                      <svg
-                        width="24"
-                        height="24"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                      >
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                      </svg>
-                    </button>
-                  </div>
-
-                  <div class="camera-preview-wrapper">
-                    <video
-                      id="cameraVideo"
-                      autoplay
-                      playsinline
-                      class="camera-video"
-                    ></video>
-                    <div class="camera-focus-frame"></div>
-                    <div class="camera-guide-text">
-                      Position document in frame
-                    </div>
-                  </div>
-
-                  <div class="camera-actions">
-                    <button type="button" id="captureBtn" class="btn-capture">
-                      <svg
-                        width="24"
-                        height="24"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                      >
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <circle cx="12" cy="12" r="6"></circle>
-                      </svg>
-                      <span>Capture</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
               <div id="fileList" class="file-list"></div>
             </div>
           </div>
@@ -463,5 +405,61 @@
         draw();
       })();
     </script>
+
+    <!-- Camera Modal (Positioned absolutely at body level to float over content) -->
+    <div id="cameraModal" class="camera-modal hidden">
+      <div class="camera-modal-overlay"></div>
+      <div class="camera-container">
+        <div class="camera-header">
+          <h2 class="camera-title">📸 Capture Document</h2>
+          <button
+            type="button"
+            id="closeCameraBtn"
+            class="camera-close-btn"
+            title="Close camera"
+          >
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        <div class="camera-preview-wrapper">
+          <video
+            id="cameraVideo"
+            autoplay
+            playsinline
+            class="camera-video"
+          ></video>
+          <div class="camera-focus-frame"></div>
+          <div class="camera-guide-text">Position document in frame</div>
+        </div>
+
+        <div class="camera-actions">
+          <button type="button" id="captureBtn" class="btn-capture">
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="6"></circle>
+            </svg>
+            <span>Capture</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

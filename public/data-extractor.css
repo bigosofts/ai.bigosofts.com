@@ -2,6 +2,14 @@
    DATA EXTRACTOR — Complete Styles
    ═══════════════════════════════════════════════════════════ */
 
+/* Ensure body and html allow fixed positioning */
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+}
+
 /* ─── Workspace Layout ─── */
 .de-workspace {
   position: relative;
