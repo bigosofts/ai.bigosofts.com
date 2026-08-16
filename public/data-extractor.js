@@ -1,5 +1,6 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const SESSION_ID = sessionStorage.getItem("bos_session_id") || "sess-" + crypto.randomUUID();
+  const SESSION_ID =
+    sessionStorage.getItem("bos_session_id") || "sess-" + crypto.randomUUID();
   sessionStorage.setItem("bos_session_id", SESSION_ID);
 
   const contentInput = document.getElementById("userInput");
@@ -47,11 +48,43 @@ document.addEventListener("DOMContentLoaded", () => {
   if (cameraBtn) {
     cameraBtn.addEventListener("click", async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        // Request rear camera (environment) with optimized constraints for document capture
+        const constraints = {
+          video: {
+            facingMode: { ideal: "environment" }, // Prefer rear camera
+            width: { ideal: 1920 },
+            height: { ideal: 1440 },
+            aspectRatio: { ideal: 4 / 3 },
+          },
+          audio: false,
+        };
+
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
         cameraVideo.srcObject = stream;
         cameraModal.classList.remove("hidden");
+
+        // Show visual feedback
+        console.log("✅ Rear camera initialized for document capture");
       } catch (err) {
-        alert("Could not access camera: " + err.message);
+        // Fallback: try any available camera
+        try {
+          console.warn(
+            "⚠️ Rear camera not available, trying any camera:",
+            err.message,
+          );
+          const fallbackConstraints = {
+            video: { width: { ideal: 1920 }, height: { ideal: 1440 } },
+            audio: false,
+          };
+          stream =
+            await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+          cameraVideo.srcObject = stream;
+          cameraModal.classList.remove("hidden");
+          console.log("✅ Fallback camera initialized");
+        } catch (fallbackErr) {
+          alert("Camera access denied or unavailable: " + fallbackErr.message);
+          console.error("❌ Camera initialization failed:", fallbackErr);
+        }
       }
     });
   }
@@ -63,23 +96,59 @@ document.addEventListener("DOMContentLoaded", () => {
   if (captureBtn) {
     captureBtn.addEventListener("click", () => {
       if (!stream) return;
-      const canvas = document.createElement("canvas");
-      canvas.width = cameraVideo.videoWidth;
-      canvas.height = cameraVideo.videoHeight;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
+      captureBtn.disabled = true;
+      captureBtn.textContent = "📸 Processing...";
 
-      canvas.toBlob(async (blob) => {
-        const file = new File([blob], `camera_capture_${Date.now()}.jpg`, { type: "image/jpeg" });
-        closeCamera();
-        await uploadFile(file);
-      }, "image/jpeg", 0.95);
+      // Step 1: Capture at full resolution
+      const fullCanvas = document.createElement("canvas");
+      fullCanvas.width = cameraVideo.videoWidth;
+      fullCanvas.height = cameraVideo.videoHeight;
+      const ctx = fullCanvas.getContext("2d");
+      ctx.drawImage(cameraVideo, 0, 0, fullCanvas.width, fullCanvas.height);
+
+      // Step 2: Resize to optimized dimensions (900x1200) for AI text processing
+      const optimizedCanvas = document.createElement("canvas");
+      const maxWidth = 900;
+      const maxHeight = 1200;
+      let targetWidth = fullCanvas.width;
+      let targetHeight = fullCanvas.height;
+
+      if (targetWidth > maxWidth || targetHeight > maxHeight) {
+        const aspectRatio = fullCanvas.width / fullCanvas.height;
+        if (targetWidth > targetHeight) {
+          targetWidth = Math.min(maxWidth, targetWidth);
+          targetHeight = Math.round(targetWidth / aspectRatio);
+        } else {
+          targetHeight = Math.min(maxHeight, targetHeight);
+          targetWidth = Math.round(targetHeight * aspectRatio);
+        }
+      }
+
+      optimizedCanvas.width = targetWidth;
+      optimizedCanvas.height = targetHeight;
+      const optimizedCtx = optimizedCanvas.getContext("2d");
+      optimizedCtx.drawImage(fullCanvas, 0, 0, targetWidth, targetHeight);
+
+      // Step 3: Convert to optimized JPEG (quality: 70%, file size ~80-150KB)
+      optimizedCanvas.toBlob(
+        async (blob) => {
+          const file = new File([blob], `camera_capture_${Date.now()}.jpg`, {
+            type: "image/jpeg",
+          });
+          closeCamera();
+          captureBtn.disabled = false;
+          captureBtn.textContent = "Capture";
+          await uploadFile(file);
+        },
+        "image/jpeg",
+        0.7,
+      );
     });
   }
 
   function closeCamera() {
     if (stream) {
-      stream.getTracks().forEach(track => track.stop());
+      stream.getTracks().forEach((track) => track.stop());
       stream = null;
     }
     cameraModal.classList.add("hidden");
@@ -120,12 +189,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await r.json();
       if (!data.success) throw new Error(data.error);
 
-      files.push({ id, serverPath: data.filePath, mimeType: data.mimeType, url: data.staticUrl });
+      files.push({
+        id,
+        serverPath: data.filePath,
+        mimeType: data.mimeType,
+        url: data.staticUrl,
+      });
       row.querySelector(".file-name").textContent = file.name;
 
       removeBtn.disabled = false;
       removeBtn.addEventListener("click", () => {
-        files = files.filter(f => f.id !== id);
+        files = files.filter((f) => f.id !== id);
         row.remove();
       });
     } catch (err) {
@@ -164,7 +238,7 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("btnLoading").style.display = "flex";
 
       try {
-        const filePaths = files.map(f => f.serverPath);
+        const filePaths = files.map((f) => f.serverPath);
 
         const response = await fetch("/api/extract-data", {
           method: "POST",
@@ -191,7 +265,6 @@ document.addEventListener("DOMContentLoaded", () => {
         resultContent.innerHTML = html;
 
         showView("result");
-
       } catch (e) {
         console.error("Extraction error:", e);
         document.getElementById("errorMessage").textContent = e.message;
@@ -223,24 +296,27 @@ document.addEventListener("DOMContentLoaded", () => {
           "text/html": htmlBlob,
           "text/plain": textBlob,
         });
-        navigator.clipboard.write([item]).then(() => {
-          copyBtn.classList.add("copied");
-          copyBtnText.textContent = "Copied!";
-          setTimeout(() => {
-            copyBtn.classList.remove("copied");
-            copyBtnText.textContent = "Copy All";
-          }, 2500);
-        }).catch(() => {
-          // Fallback to plain text
-          navigator.clipboard.writeText(textContent).then(() => {
+        navigator.clipboard
+          .write([item])
+          .then(() => {
             copyBtn.classList.add("copied");
             copyBtnText.textContent = "Copied!";
             setTimeout(() => {
               copyBtn.classList.remove("copied");
               copyBtnText.textContent = "Copy All";
             }, 2500);
+          })
+          .catch(() => {
+            // Fallback to plain text
+            navigator.clipboard.writeText(textContent).then(() => {
+              copyBtn.classList.add("copied");
+              copyBtnText.textContent = "Copied!";
+              setTimeout(() => {
+                copyBtn.classList.remove("copied");
+                copyBtnText.textContent = "Copy All";
+              }, 2500);
+            });
           });
-        });
       } else {
         navigator.clipboard.writeText(textContent).then(() => {
           copyBtn.classList.add("copied");
