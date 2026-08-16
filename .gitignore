@@ -1,2 +1,22 @@
 node_modules/
 .env
+
+# Server-generated runtime files
+tmp/
+*.log
+stderr.log
+stdout.log
+
+# Generated folders
+.well-known/
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
