@@ -46,7 +46,14 @@ const docx = require("docx");
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
-app.use(express.static("public"));
+
+// Serve static files with no-cache for CSS to ensure updates are always fetched
+app.use(
+  express.static("public", {
+    maxAge: 0,
+    etag: false,
+  }),
+);
 
 // Ensure data directory and authorized users file
 const DATA_DIR = path.join(__dirname, "data");
