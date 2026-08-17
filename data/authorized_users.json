@@ -19,5 +19,12 @@
     "age": "32",
     "page": "document-maker.html",
     "grantedAt": "2026-08-14T08:25:19.085Z"
+  },
+  {
+    "name": "Lecturer Abdullah AL Amin",
+    "email": "abdullah.limonbau@gmail.com",
+    "age": "32",
+    "page": "data-extractor.html",
+    "grantedAt": "2026-08-17T00:42:58.327Z"
   }
 ]
