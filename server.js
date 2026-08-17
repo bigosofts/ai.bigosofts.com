@@ -354,7 +354,7 @@ app.post("/api/extract-data", async (req, res) => {
         let pageCount = 0;
         for await (const pageBuffer of document) {
           pageCount++;
-          if (pageCount > 10) break; // limit to 10 pages (unrestricted for better document support)
+          if (pageCount > 20) break; // limit to 20 pages for batch processing
           try {
             // Optimized for AI text extraction: 900px max, quality 70%, with sharpening for OCR
             const enhanced = await sharp(pageBuffer)
@@ -418,6 +418,220 @@ Return the response in raw Markdown format.`;
     res.json({ success: true, result: aiCode });
   } catch (error) {
     console.error("Extraction error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// In-memory store for batch processing results: { batchId: { results: [], pending: true } }
+const batchStore = new Map();
+
+// Cleanup expired batches every 5 minutes
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [batchId, batch] of batchStore.entries()) {
+      if (now - batch.createdAt > 30 * 60 * 1000) {
+        batchStore.delete(batchId);
+        console.log(`Batch ${batchId} expired and cleaned up`);
+      }
+    }
+  },
+  5 * 60 * 1000,
+);
+
+// ----------------------------------------------------------------------------
+// API: Extract Data - Hybrid Progressive (Batch Processing)
+// First 5 images processed immediately, remaining batched asynchronously
+// ----------------------------------------------------------------------------
+app.post("/api/extract-batch", async (req, res) => {
+  try {
+    const { prompt, filePaths } = req.body;
+    if (!prompt || !filePaths || filePaths.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Prompt and at least one file are required.",
+      });
+    }
+
+    // Convert all pages/images from all files to Base64 first
+    const allImages = await processImageBatch(filePaths);
+
+    if (allImages.length === 0) {
+      throw new Error("No valid images could be processed.");
+    }
+
+    const batchId = uuidv4();
+    const batchSize = 5;
+    const totalBatches = Math.ceil(allImages.length / batchSize);
+
+    // Initialize batch store
+    batchStore.set(batchId, {
+      results: [],
+      pending: true,
+      totalBatches,
+      currentBatch: 1,
+      createdAt: Date.now(),
+    });
+
+    // Process first batch (5 images/pages) immediately
+    const firstBatchImages = allImages.slice(0, batchSize);
+
+    const systemPrompt = `You are a world-class Data Extractor AI. Your job is to read the provided image(s) and extract all information accurately. 
+You must NEVER change, interpret, or alter the factual meaning of any data. Fix only spelling errors and grammar. 
+You may format the output beautifully using tables, bullet points, numbered lists, blockquotes, and section headings as appropriate. 
+Return the response in raw Markdown format.`;
+
+    const firstResult = await callAI(systemPrompt, prompt, firstBatchImages);
+    batchStore.get(batchId).results.push({
+      batch: 1,
+      result: firstResult,
+      status: "complete",
+    });
+
+    // Process remaining batches in background
+    if (allImages.length > batchSize) {
+      processRemainingBatches(
+        batchId,
+        allImages,
+        batchSize,
+        systemPrompt,
+        prompt,
+      );
+    } else {
+      batchStore.get(batchId).pending = false;
+    }
+
+    res.json({
+      success: true,
+      batchId,
+      totalBatches,
+      result: firstResult, // First result for immediate display
+    });
+  } catch (error) {
+    console.error("Batch extraction error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Helper: Process remaining batches asynchronously
+async function processRemainingBatches(
+  batchId,
+  allImages,
+  batchSize,
+  systemPrompt,
+  prompt,
+) {
+  try {
+    const batchData = batchStore.get(batchId);
+    if (!batchData) return;
+
+    for (let i = batchSize; i < allImages.length; i += batchSize) {
+      const batchImages = allImages.slice(i, i + batchSize);
+
+      if (batchImages.length > 0) {
+        const batchNumber = Math.floor(i / batchSize) + 1;
+        const result = await callAI(systemPrompt, prompt, batchImages);
+        batchData.results.push({
+          batch: batchNumber,
+          result,
+          status: "complete",
+        });
+        batchData.currentBatch = batchNumber;
+      }
+    }
+
+    batchData.pending = false;
+  } catch (error) {
+    console.error("Background batch processing error:", error);
+    if (batchStore.has(batchId)) {
+      batchStore.get(batchId).error = error.message;
+      batchStore.get(batchId).pending = false;
+    }
+  }
+}
+
+// Helper: Process image batch (similar to original extraction)
+async function processImageBatch(filePaths) {
+  const base64Images = [];
+
+  for (const filePath of filePaths) {
+    if (!fs.existsSync(filePath)) continue;
+
+    const ext = path.extname(filePath).toLowerCase();
+
+    if (ext === ".pdf") {
+      const { pdf } = await import("pdf-to-img");
+      const standardFontPath = path
+        .join(__dirname, "node_modules", "pdfjs-dist", "standard_fonts", "/")
+        .replace(/\\/g, "/");
+      const document = await pdf(filePath, {
+        scale: 1.2,
+        standardFontDataUrl: standardFontPath,
+      });
+      let pageCount = 0;
+      for await (const pageBuffer of document) {
+        pageCount++;
+        if (pageCount > 20) break;
+        try {
+          const enhanced = await sharp(pageBuffer)
+            .resize({
+              width: 900,
+              height: 900,
+              fit: "inside",
+              withoutEnlargement: true,
+            })
+            .normalize()
+            .sharpen({ sigma: 1.0 })
+            .jpeg({ quality: 70 })
+            .toBuffer();
+          base64Images.push(enhanced.toString("base64"));
+        } catch (sharpErr) {
+          base64Images.push(pageBuffer.toString("base64"));
+        }
+      }
+    } else {
+      try {
+        const enhanced = await sharp(filePath)
+          .resize({
+            width: 900,
+            height: 900,
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .normalize()
+          .sharpen({ sigma: 1.0 })
+          .jpeg({ quality: 70 })
+          .toBuffer();
+        base64Images.push(enhanced.toString("base64"));
+      } catch (sharpErr) {
+        const rawBuffer = fs.readFileSync(filePath);
+        base64Images.push(rawBuffer.toString("base64"));
+      }
+    }
+  }
+
+  return base64Images;
+}
+
+// API: Poll for batch results
+app.get("/api/get-batch-result/:batchId", (req, res) => {
+  try {
+    const { batchId } = req.params;
+    const batch = batchStore.get(batchId);
+
+    if (!batch) {
+      return res.status(404).json({ success: false, error: "Batch not found" });
+    }
+
+    res.json({
+      success: true,
+      batchId,
+      results: batch.results,
+      totalBatches: batch.totalBatches,
+      currentBatch: batch.currentBatch,
+      pending: batch.pending,
+    });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
