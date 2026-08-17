@@ -240,7 +240,8 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         const filePaths = files.map((f) => f.serverPath);
 
-        const response = await fetch("/api/extract-data", {
+        // Use hybrid progressive batch endpoint
+        const response = await fetch("/api/extract-batch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt, filePaths }),
@@ -252,19 +253,18 @@ document.addEventListener("DOMContentLoaded", () => {
           throw new Error(data.error || "Data extraction failed.");
         }
 
-        // Convert markdown to HTML
-        const converter = new showdown.Converter({
-          tables: true,
-          strikethrough: true,
-          tasklists: true,
-          openLinksInNewWindow: true,
-        });
-        const html = converter.makeHtml(data.result);
+        const batchId = data.batchId;
+        const totalBatches = data.totalBatches;
+        let allResults = [{ batch: 1, result: data.result }];
 
-        const resultContent = document.getElementById("resultContent");
-        resultContent.innerHTML = html;
-
+        // Display first result immediately
+        showBatchResults(allResults, totalBatches, 1);
         showView("result");
+
+        // Poll for remaining batches if more than one batch
+        if (totalBatches > 1) {
+          await pollBatchResults(batchId, allResults, totalBatches);
+        }
       } catch (e) {
         console.error("Extraction error:", e);
         document.getElementById("errorMessage").textContent = e.message;
@@ -275,6 +275,69 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("btnLoading").style.display = "none";
       }
     });
+  }
+
+  // Poll for batch results
+  async function pollBatchResults(batchId, allResults, totalBatches) {
+    let currentBatch = 1;
+    let maxAttempts = 120; // 2 minutes max
+    let attempts = 0;
+
+    while (currentBatch < totalBatches && attempts < maxAttempts) {
+      attempts++;
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
+
+      try {
+        const response = await fetch(`/api/get-batch-result/${batchId}`);
+        const data = await response.json();
+
+        if (data.success && data.results.length > allResults.length) {
+          // New results available
+          allResults = data.results;
+          showBatchResults(allResults, totalBatches, data.currentBatch);
+          currentBatch = data.currentBatch;
+        }
+
+        // All batches complete
+        if (!data.pending) {
+          break;
+        }
+      } catch (err) {
+        console.warn("Polling error:", err);
+      }
+    }
+  }
+
+  // Display batch results progressively
+  function showBatchResults(results, totalBatches, currentBatch) {
+    const converter = new showdown.Converter({
+      tables: true,
+      strikethrough: true,
+      tasklists: true,
+      openLinksInNewWindow: true,
+    });
+
+    const resultContent = document.getElementById("resultContent");
+
+    // Build batched result display
+    let html = `<div class="batch-progress">📊 Processing: Batch ${currentBatch} of ${totalBatches}</div>`;
+
+    results.forEach((batchItem, index) => {
+      const isComplete = batchItem.status === "complete";
+      html += `
+        <div class="batch-result-card ${isComplete ? "complete" : "loading"}">
+          <div class="batch-header">
+            <span class="batch-number">Batch ${batchItem.batch}</span>
+            ${isComplete ? '<span class="batch-status">✓ Complete</span>' : '<span class="batch-status loading">⏳ Processing...</span>'}
+          </div>
+          <div class="batch-content">
+            ${converter.makeHtml(batchItem.result)}
+          </div>
+        </div>
+      `;
+    });
+
+    resultContent.innerHTML = html;
   }
 
   // ─── Copy Button ───
