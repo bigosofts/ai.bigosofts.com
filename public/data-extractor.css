@@ -206,6 +206,7 @@ body {
     opacity: 0;
     transform: translateY(-4px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -373,12 +374,14 @@ body {
 }
 
 @keyframes framePulse {
+
   0%,
   100% {
     box-shadow:
       inset 0 0 20px rgba(99, 102, 241, 0.2),
       0 0 30px rgba(99, 102, 241, 0.3) !important;
   }
+
   50% {
     box-shadow:
       inset 0 0 20px rgba(99, 102, 241, 0.4),
@@ -583,6 +586,7 @@ body {
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -623,11 +627,9 @@ body {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: linear-gradient(
-    135deg,
-    rgba(34, 197, 94, 0.15),
-    rgba(16, 185, 129, 0.08)
-  );
+  background: linear-gradient(135deg,
+      rgba(34, 197, 94, 0.15),
+      rgba(16, 185, 129, 0.08));
   border: 1px solid rgba(34, 197, 94, 0.2);
   display: flex;
   align-items: center;
@@ -871,11 +873,9 @@ body {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background: linear-gradient(
-    135deg,
-    rgba(99, 102, 241, 0.15) 0%,
-    rgba(168, 85, 247, 0.15) 100%
-  );
+  background: linear-gradient(135deg,
+      rgba(99, 102, 241, 0.15) 0%,
+      rgba(168, 85, 247, 0.15) 100%);
   border: 1px solid rgba(99, 102, 241, 0.3);
   border-radius: 12px;
   color: #818cf8;
@@ -885,11 +885,22 @@ body {
   animation: pulse-batch 2s ease-in-out infinite;
 }
 
+.batch-progress.complete {
+  background: linear-gradient(135deg,
+      rgba(34, 197, 94, 0.15) 0%,
+      rgba(16, 185, 129, 0.15) 100%);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #4ade80;
+  animation: none;
+}
+
 @keyframes pulse-batch {
+
   0%,
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.7;
   }
@@ -910,6 +921,7 @@ body {
     opacity: 0;
     transform: translateY(10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -958,6 +970,7 @@ body {
   0% {
     transform: rotate(0deg);
   }
+
   100% {
     transform: rotate(360deg);
   }
@@ -965,7 +978,7 @@ body {
 
 .batch-content {
   padding: 1.25rem;
-  color: #cbd5e1;
+  color: #000000;
   line-height: 1.8;
   max-height: 600px;
   overflow-y: auto;
@@ -974,7 +987,7 @@ body {
 .batch-content h1,
 .batch-content h2,
 .batch-content h3 {
-  color: #e2e8f0;
+  color: #000000;
   margin-top: 1.5rem;
   margin-bottom: 0.75rem;
   font-weight: 600;
@@ -1063,29 +1076,36 @@ body {
   .de-workspace {
     padding: 1.25rem;
   }
+
   .de-title {
     font-size: 1.8rem;
   }
+
   .de-results-section {
     padding: 0 1rem 2rem;
   }
+
   .de-results-body {
     padding: 1rem;
   }
+
   .de-results-content {
     padding: 1.25rem 1rem;
   }
+
   .de-results-header {
     padding: 1.25rem 1rem;
     flex-direction: column;
     align-items: stretch;
     gap: 1.25rem;
   }
+
   .de-results-header-actions {
     width: 100%;
     display: flex;
     gap: 0.75rem;
   }
+
   .de-copy-btn,
   .de-new-btn {
     flex: 1;

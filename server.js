@@ -453,9 +453,16 @@ app.post("/api/extract-batch", async (req, res) => {
       });
     }
 
+    // Convert all pages/images from all files to Base64 first
+    const allImages = await processImageBatch(filePaths);
+
+    if (allImages.length === 0) {
+      throw new Error("No valid images could be processed.");
+    }
+
     const batchId = uuidv4();
     const batchSize = 5;
-    const totalBatches = Math.ceil(filePaths.length / batchSize);
+    const totalBatches = Math.ceil(allImages.length / batchSize);
 
     // Initialize batch store
     batchStore.set(batchId, {
@@ -466,14 +473,8 @@ app.post("/api/extract-batch", async (req, res) => {
       createdAt: Date.now(),
     });
 
-    // Process first batch (5 images) immediately
-    const firstBatchPaths = filePaths.slice(0, batchSize);
-    const firstBatchImages = await processImageBatch(firstBatchPaths);
-
-    if (firstBatchImages.length === 0) {
-      batchStore.delete(batchId);
-      throw new Error("No valid images could be processed.");
-    }
+    // Process first batch (5 images/pages) immediately
+    const firstBatchImages = allImages.slice(0, batchSize);
 
     const systemPrompt = `You are a world-class Data Extractor AI. Your job is to read the provided image(s) and extract all information accurately. 
 You must NEVER change, interpret, or alter the factual meaning of any data. Fix only spelling errors and grammar. 
@@ -488,10 +489,10 @@ Return the response in raw Markdown format.`;
     });
 
     // Process remaining batches in background
-    if (filePaths.length > batchSize) {
+    if (allImages.length > batchSize) {
       processRemainingBatches(
         batchId,
-        filePaths,
+        allImages,
         batchSize,
         systemPrompt,
         prompt,
@@ -515,7 +516,7 @@ Return the response in raw Markdown format.`;
 // Helper: Process remaining batches asynchronously
 async function processRemainingBatches(
   batchId,
-  filePaths,
+  allImages,
   batchSize,
   systemPrompt,
   prompt,
@@ -524,19 +525,18 @@ async function processRemainingBatches(
     const batchData = batchStore.get(batchId);
     if (!batchData) return;
 
-    for (let i = batchSize; i < filePaths.length; i += batchSize) {
-      const batchPaths = filePaths.slice(i, i + batchSize);
-      const batchImages = await processImageBatch(batchPaths);
+    for (let i = batchSize; i < allImages.length; i += batchSize) {
+      const batchImages = allImages.slice(i, i + batchSize);
 
       if (batchImages.length > 0) {
         const batchNumber = Math.floor(i / batchSize) + 1;
         const result = await callAI(systemPrompt, prompt, batchImages);
         batchData.results.push({
-          batch: batchNumber + 1,
+          batch: batchNumber,
           result,
           status: "complete",
         });
-        batchData.currentBatch = batchNumber + 1;
+        batchData.currentBatch = batchNumber;
       }
     }
 

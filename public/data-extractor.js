@@ -255,7 +255,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const batchId = data.batchId;
         const totalBatches = data.totalBatches;
-        let allResults = [{ batch: 1, result: data.result }];
+        let allResults = [{ 
+          batch: 1, 
+          result: data.result, 
+          status: totalBatches === 1 ? "complete" : "loading" 
+        }];
 
         // Display first result immediately
         showBatchResults(allResults, totalBatches, 1);
@@ -300,6 +304,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // All batches complete
         if (!data.pending) {
+          // Mark all fetched batches as complete
+          allResults = allResults.map(r => ({ ...r, status: "complete" }));
+          showBatchResults(allResults, totalBatches, totalBatches);
           break;
         }
       } catch (err) {
@@ -319,8 +326,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resultContent = document.getElementById("resultContent");
 
+    // Check if all batches are completed
+    const isFullyComplete = results.length === totalBatches && results.every(r => r.status === "complete");
+
     // Build batched result display
-    let html = `<div class="batch-progress">📊 Processing: Batch ${currentBatch} of ${totalBatches}</div>`;
+    let html = "";
+    if (isFullyComplete) {
+      html += `<div class="batch-progress complete">✅ All ${totalBatches} batch(es) completed successfully!</div>`;
+    } else {
+      html += `<div class="batch-progress">📊 Processing: Batch ${currentBatch} of ${totalBatches}</div>`;
+    }
 
     results.forEach((batchItem, index) => {
       const isComplete = batchItem.status === "complete";
