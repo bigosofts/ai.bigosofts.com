@@ -1,22 +1,25 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
 node_modules/
-.env
+/node_modules/
+**/node_modules/
 
-# Server-generated runtime files
-tmp/
-*.log
-stderr.log
-stdout.log
+# Test / scratch files
+test*.js
+test*.pdf
 
-# Generated folders
+# Excel temp lock files (created when file is open in Excel)
+uploads/~$*.xlsx
+~$*.xlsx
+
+# Local/server generated files
 .well-known/
-.cache/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Editor files
-.vscode/
-.idea/
-*.swp
-*.swo
+.git/
+tmp/
+.htaccess
+.ftpquota
+stderr.log
+.idea
+server.crt
+server.key
