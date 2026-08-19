@@ -23,8 +23,8 @@ sharp.concurrency(1);
 const {
   Document,
   Packer,
-  Paragraph,
-  TextRun,
+  Paragraph: OriginalParagraph,
+  TextRun: OriginalTextRun,
   Table,
   TableRow,
   TableCell,
@@ -42,6 +42,51 @@ const {
   TableLayoutType,
 } = require("docx");
 const docx = require("docx");
+
+class SafeParagraph extends OriginalParagraph {
+  constructor(options) {
+    if (options && Array.isArray(options.children)) {
+      options.children = options.children.flat(Infinity);
+    }
+    super(options);
+  }
+}
+
+class SafeTextRun extends OriginalTextRun {
+  constructor(options) {
+    const defaultFont = {
+      ascii: "Arial",
+      cs: "Kalpurush",
+      eastAsia: "Kalpurush",
+      hAnsi: "Arial",
+      hint: "default"
+    };
+    if (options) {
+      if (options.font) {
+        if (typeof options.font === "string") {
+          options.font = {
+            ascii: options.font,
+            cs: "Kalpurush",
+            eastAsia: "Kalpurush",
+            hAnsi: options.font,
+            hint: "default"
+          };
+        } else {
+          options.font = { ...defaultFont, ...options.font };
+        }
+      } else {
+        options.font = defaultFont;
+      }
+    }
+    super(options);
+  }
+}
+
+const Paragraph = SafeParagraph;
+const TextRun = SafeTextRun;
+docx.Paragraph = SafeParagraph;
+docx.TextRun = SafeTextRun;
+
 
 const app = express();
 app.use(cors());
@@ -1014,7 +1059,7 @@ app.post("/api/generate-document", async (req, res) => {
         return `Image ${index + 1}: description: ${String(image.description || "No description supplied")}.`;
       })
       .join("\n");
-    const systemPrompt = `You are a professional Word document architect. Turn the user's brief into a polished, faithful document plan. Choose an appropriate document archetype and layout based on the reference skill. Preserve all facts. Use supplied image DESCRIPTIONS only to decide placement; do not infer image content from filenames, URLs, upload paths, or other metadata. Do not change dates, values, names, or topic. Do not merge, drop, or reorder user data. Return ONLY valid JSON matching this schema:\n{"title":"string","subtitle":"string","documentType":"string","designPreset":"standard_business|formal_administrative_register|formal_letter|professional_cv|business_proposal","metadata":["Label: value"],"letterMeta":{"date":"string","recipientLines":["string"],"subject":"string","salutation":"string","closing":"string","signatory":"string","signatoryTitle":"string","signatoryOrg":"string"},"cvMeta":{"name":"string","title":"string","contact":[{"icon":"phone|email|link","value":"string"}],"education":[{"degree":"string","institution":"string","year":"string"}],"skills":["string"],"languages":["string"],"profile":"string","experience":[{"title":"string","company":"string","date":"string","bullets":["string"]}],"projects":[{"name":"string","description":"string","link":"string"}]},"proposalMeta":{"title":"string","subtitle":"string","preparedFor":"string","preparedBy":"string","date":"string"},"sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"numbered":["string"],"callout":"string","signatures":[{"role":"string","name":"string"}],"table":{"headers":["string"],"rows":[["string"]]},"bigNumberList":[{"number":"string","title":"string","text":"string"}],"dividedList":[{"title":"string","subtitle":"string"}]}],"imagePlacements":[{"imageIndex":1,"afterSection":0,"caption":"string","placement":"wide"}]}\nChoose professional_cv for modern two-column CVs or resumes. When using professional_cv, you MUST populate the cvMeta object with name, title, contact, education, skills, languages, profile, experience, and projects. Use the image (if provided) as the profile photo.\nChoose formal_letter for applications, ржжрж░ржЦрж╛рж╕рзНржд, formal letters, cover letters, requests, complaints, or any correspondence addressed to a specific person or authority. When using formal_letter, you MUST populate the letterMeta object. The body paragraphs go in sections[0].paragraphs as usual.\nChoose formal_administrative_register for attendance, beneficiary, student/patient, field-report, official-record, or grouped register data. Use tables only for genuine comparable row/column data. Keep prose concise and well structured. Do not emit markdown or code.\nChoose business_proposal for pitches, digital marketing strategies, or highly styled project plans. Populate the proposalMeta object.\n\nREFERENCE SKILL:\n${skill}\n\nUSER IMAGES (descriptions only):\n${imageContext || "None"}`;
+    const systemPrompt = `You are a professional Word document architect. Turn the user's brief into a polished, faithful document plan. Choose an appropriate document archetype and layout based on the reference skill. Preserve all facts. Use supplied image DESCRIPTIONS only to decide placement; do not infer image content from filenames, URLs, upload paths, or other metadata. Do not change dates, values, names, or topic. Do not merge, drop, or reorder user data. Return ONLY valid JSON matching this schema:\n{"title":"string","subtitle":"string","documentType":"string","designPreset":"standard_business|formal_administrative_register|formal_letter|professional_cv|business_proposal","metadata":["Label: value"],"letterMeta":{"date":"string","recipientLines":["string"],"subject":"string","salutation":"string","closing":"string","signatory":"string","signatoryTitle":"string","signatoryOrg":"string"},"cvMeta":{"name":"string","title":"string","contact":[{"icon":"phone|email|link","value":"string"}],"education":[{"degree":"string","institution":"string","year":"string"}],"skills":["string"],"languages":["string"],"profile":"string","experience":[{"title":"string","company":"string","date":"string","bullets":["string"]}],"projects":[{"name":"string","description":"string","link":"string"}]},"proposalMeta":{"title":"string","subtitle":"string","preparedFor":"string","preparedBy":"string","date":"string"},"sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"numbered":["string"],"callout":"string","signatures":[{"role":"string","name":"string"}],"table":{"headers":["string"],"rows":[["string"]]},"bigNumberList":[{"number":"string","title":"string","text":"string"}],"dividedList":[{"title":"string","subtitle":"string"}]}],"imagePlacements":[{"imageIndex":1,"afterSection":0,"caption":"string","placement":"wide"}]}\nChoose professional_cv for modern two-column CVs or resumes. When using professional_cv, you MUST populate the cvMeta object with name, title, contact, education, skills, languages, profile, experience, and projects. Use the image (if provided) as the profile photo.\nChoose formal_letter for applications, দরখাস্ত, formal letters, cover letters, requests, complaints, or any correspondence addressed to a specific person or authority. When using formal_letter, you MUST populate the letterMeta object. The body paragraphs go in sections[0].paragraphs as usual.\nChoose formal_administrative_register for attendance, beneficiary, student/patient, field-report, official-record, or grouped register data. Use tables only for genuine comparable row/column data. Keep prose concise and well structured. Do not emit markdown or code.\nChoose business_proposal for pitches, digital marketing strategies, or highly styled project plans. Populate the proposalMeta object.\n\nREFERENCE SKILL:\n${skill}\n\nUSER IMAGES (descriptions only):\n${imageContext || "None"}`;
     const rawPlan = await callAI(systemPrompt, String(content));
     const plan = parseDocumentPlan(rawPlan, content, images.length);
     const buffer =
@@ -1652,16 +1697,16 @@ const AUDIT_THEME = {
 };
 
 const BENGALI_DIGITS = [
-  "рзж",
-  "рзз",
-  "рзи",
-  "рзй",
-  "рзк",
-  "рзл",
-  "рзм",
-  "рзн",
-  "рзо",
-  "рзп",
+  "০",
+  "১",
+  "২",
+  "৩",
+  "৪",
+  "৫",
+  "৬",
+  "৭",
+  "৮",
+  "৯",
 ];
 const toBengaliNumeral = (n) =>
   String(n)
@@ -1669,20 +1714,83 @@ const toBengaliNumeral = (n) =>
     .map((d) => BENGALI_DIGITS[Number(d)] || d)
     .join("");
 const bengaliParenPrefix = (n) => `${toBengaliNumeral(n)})`;
-const bengaliDaariPrefix = (n) => `${toBengaliNumeral(n)}ред`;
+const bengaliDaariPrefix = (n) => `${toBengaliNumeral(n)}।`;
 const subDecimalPrefix = (parent, child, lang = "bn") =>
   lang === "bn"
     ? `${toBengaliNumeral(parent)}.${toBengaliNumeral(child)}`
     : `${parent}.${child}`;
 
+function parseTextWithSubSuper(text, baseOptions = {}) {
+  const str = String(text || "");
+  const runs = [];
+  const regex = /(<sup[^>]*>.*?<\/sup>|<sub[^>]*>.*?<\/sub>)/gi;
+  const parts = str.split(regex);
+  
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.toLowerCase().startsWith("<sup")) {
+      const match = part.match(/<sup[^>]*>(.*?)<\/sup>/i);
+      const innerText = match ? match[1] : "";
+      runs.push(new TextRun({
+        text: innerText,
+        superScript: true,
+        ...baseOptions
+      }));
+    } else if (part.toLowerCase().startsWith("<sub")) {
+      const match = part.match(/<sub[^>]*>(.*?)<\/sub>/i);
+      const innerText = match ? match[1] : "";
+      runs.push(new TextRun({
+        text: innerText,
+        subScript: true,
+        ...baseOptions
+      }));
+    } else {
+      runs.push(new TextRun({
+        text: part,
+        ...baseOptions
+      }));
+    }
+  }
+  
+  if (runs.length === 0) {
+    runs.push(new TextRun({ text: "", ...baseOptions }));
+  }
+  
+  return runs;
+}
+
 function docText(text, options = {}) {
-  return new TextRun({
-    text: String(text || ""),
-    font: TOKENS.font,
+  const fontConfig = {
+    ascii: TOKENS.font,
+    cs: "Kalpurush",
+    eastAsia: "Kalpurush",
+    hAnsi: TOKENS.font,
+    hint: "default"
+  };
+
+  let mergedFont = fontConfig;
+  if (options.font) {
+    if (typeof options.font === "string") {
+      mergedFont = {
+        ascii: options.font,
+        cs: "Kalpurush",
+        eastAsia: "Kalpurush",
+        hAnsi: options.font,
+        hint: "default"
+      };
+    } else {
+      mergedFont = { ...fontConfig, ...options.font };
+    }
+  }
+
+  const mergedOptions = {
+    font: mergedFont,
     size: TOKENS.size.body,
     color: TOKENS.color.ink,
     ...options,
-  });
+  };
+  
+  return parseTextWithSubSuper(text, mergedOptions);
 }
 
 const NO_BORDERS = {
@@ -1766,16 +1874,16 @@ const createFooter = (opts = {}) => {
           ...(leftText ? [t(leftText), t(" ")] : []),
           ...(locale === "bn"
             ? [
-                t("ржкрзГрж╖рзНржарж╛ "),
+                t("পৃষ্ঠা "),
                 new TextRun({
-                  children: [PageNumber.TOTAL_PAGES],
+                  children: [PageNumber.CURRENT],
                   color: TOKENS.color.muted,
                   font: TOKENS.font,
                   size: TOKENS.size.caption,
                 }),
-                t(" ржПрж░ "),
+                t(" এর "),
                 new TextRun({
-                  children: [PageNumber.CURRENT],
+                  children: [PageNumber.TOTAL_PAGES],
                   color: TOKENS.color.muted,
                   font: TOKENS.font,
                   size: TOKENS.size.caption,
@@ -1946,7 +2054,7 @@ async function loadDocumentImage(image) {
 }
 
 // ----------------------------------------------------------------------------
-// LAYOUT: Formal Letter / Application (ржжрж░ржЦрж╛рж╕рзНржд)
+// LAYOUT: Formal Letter / Application (দরখাস্ত)
 // ----------------------------------------------------------------------------
 async function buildLetterDocx(plan, images) {
   const lm = plan.letterMeta || {};
@@ -1987,7 +2095,7 @@ async function buildLetterDocx(plan, images) {
 
   // тФАтФА Subject Line тФАтФА
   if (lm.subject) {
-    const subjectLabel = hasBengali ? "ржмрж┐рж╖ржпрж╝:" : "Subject:";
+    const subjectLabel = hasBengali ? "বিষয়:" : "Subject:";
     children.push(
       new Paragraph({
         spacing: { before: 100, after: 200 },
@@ -2434,7 +2542,7 @@ async function buildCVDocx(plan, images) {
   // Contact
   if (cv.contact && cv.contact.length) {
     leftColChildren.push(
-      leftHeading(hasBengali ? "ржпрзЛржЧрж╛ржпрзЛржЧ" : "CONTACT"),
+      leftHeading(hasBengali ? "যোগাযোগ" : "CONTACT"),
     );
     cv.contact.forEach((c) => {
       leftColChildren.push(leftItem(c.value));
@@ -2444,7 +2552,7 @@ async function buildCVDocx(plan, images) {
   // Education (Moved to Left)
   if (cv.education && cv.education.length) {
     leftColChildren.push(
-      leftHeading(hasBengali ? "рж╢рж┐ржХрзНрж╖рж╛" : "EDUCATION"),
+      leftHeading(hasBengali ? "শিক্ষা" : "EDUCATION"),
     );
     cv.education.forEach((edu) => {
       leftColChildren.push(leftItem(edu.year || "", true));
@@ -2457,7 +2565,7 @@ async function buildCVDocx(plan, images) {
   // Skills
   if (cv.skills && cv.skills.length) {
     leftColChildren.push(
-      leftHeading(hasBengali ? "ржжржХрзНрж╖рждрж╛" : "SKILLS"),
+      leftHeading(hasBengali ? "দক্ষতা" : "SKILLS"),
     );
     cv.skills.forEach((s) => {
       leftColChildren.push(leftBullet(s));
@@ -2467,7 +2575,7 @@ async function buildCVDocx(plan, images) {
   // Languages
   if (cv.languages && cv.languages.length) {
     leftColChildren.push(
-      leftHeading(hasBengali ? "ржнрж╛рж╖рж╛" : "LANGUAGES"),
+      leftHeading(hasBengali ? "ভাষা" : "LANGUAGES"),
     );
     cv.languages.forEach((l) => {
       leftColChildren.push(leftBullet(l));
@@ -2528,7 +2636,7 @@ async function buildCVDocx(plan, images) {
   // Profile
   if (cv.profile) {
     rightColChildren.push(
-      rightHeading(hasBengali ? "ржкрзНрж░рзЛржлрж╛ржЗрж▓" : "PROFILE"),
+      rightHeading(hasBengali ? "প্রোফাইল" : "PROFILE"),
     );
     rightColChildren.push(
       new Paragraph({
@@ -2542,7 +2650,7 @@ async function buildCVDocx(plan, images) {
   // Experience
   if (cv.experience && cv.experience.length) {
     rightColChildren.push(
-      rightHeading(hasBengali ? "ржЕржнрж┐ржЬрзНржЮрждрж╛" : "WORK EXPERIENCE"),
+      rightHeading(hasBengali ? "অভিজ্ঞতা" : "WORK EXPERIENCE"),
     );
     cv.experience.forEach((exp) => {
       rightColChildren.push(
@@ -2593,7 +2701,7 @@ async function buildCVDocx(plan, images) {
   if (cv.projects && cv.projects.length) {
     rightColChildren.push(
       rightHeading(
-        hasBengali ? "ржкрзНрж░ржЬрзЗржХрзНржЯрж╕ржорзВрж╣" : "PROJECTS",
+        hasBengali ? "প্রজেক্টসমূহ" : "PROJECTS",
       ),
     );
     cv.projects.forEach((proj) => {
@@ -3375,7 +3483,7 @@ async function buildDocxBuffer(plan, images) {
 
   const metadataRows = parseMetadataRows();
   const dateRow = metadataRows.find((row) =>
-    /рждрж╛рж░рж┐ржЦ|рж╕ржоржпрж╝ржХрж╛рж▓|рж╕ржоржпрж╝ржХрж╛рж▓|рж╢рзБрж░рзБ|рж╢рзЗрж╖|date|period|duration/i.test(
+    /তারিখ|সময়কাল|শুরু|শেষ|date|period|duration/i.test(
       row.label,
     ),
   );
@@ -3414,7 +3522,7 @@ async function buildDocxBuffer(plan, images) {
   if (metadataRows.length) {
     children.push(
       createCenteredHeading(
-        "ржкрзНрж░рждрж┐ржмрзЗржжржирзЗрж░ рж╕рж╛рж░рж╛ржВрж╢ржГ",
+        "প্রতিবেদনের সারসংক্ষেপ",
         {
           color: AUDIT_THEME.color.summaryHeading,
         },
