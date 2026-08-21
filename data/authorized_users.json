@@ -87,7 +87,19 @@
     "name": "Lecturer Abdullah AL Amin",
     "email": "abdullah.limonbau@gmail.com",
     "age": "32",
+<<<<<<< Updated upstream
     "page": "document-maker.html",
     "grantedAt": "2026-08-19T07:29:08.358Z"
+=======
+    "page": "data-extractor.html",
+    "grantedAt": "2026-08-21T06:28:17.477Z"
+  },
+  {
+    "name": "Lecturer Abdullah AL Amin",
+    "email": "abdullah.limonbau@gmail.com",
+    "age": "32",
+    "page": "slide-maker.html",
+    "grantedAt": "2026-08-21T07:53:53.032Z"
+>>>>>>> Stashed changes
   }
 ]

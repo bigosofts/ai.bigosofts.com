@@ -1158,13 +1158,13 @@ function getApiKeyPool() {
  * Try a single API key. Returns the generated code string on success.
  * Throws an error on failure so the caller can try the next key.
  */
-async function tryKeyOnce(apiKey, systemPrompt, userPrompt, base64Images = []) {
+async function tryKeyOnce(apiKey, systemPrompt, userPrompt, base64Images = [], customBaseUrl = null, customModel = null) {
   const baseUrl = (
-    process.env.OPENAI_BASE_URL ||
+    customBaseUrl || process.env.OPENAI_BASE_URL ||
     "https://generativelanguage.googleapis.com/v1beta/openai"
   ).replace(/\/$/, "");
   const model =
-    process.env.OPENAI_MODEL || "gemini-2.5-flash-lite-preview-06-17";
+    customModel || process.env.OPENAI_MODEL || "gemini-2.5-flash-lite-preview-06-17";
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000); // 3-minute timeout per key
@@ -1259,9 +1259,9 @@ function isFailoverError(err) {
 async function callAI(systemPrompt, userPrompt, base64Images = []) {
   let pool = getApiKeyPool();
 
-  if (pool.length === 0) {
+  if (pool.length === 0 && !process.env.OPENROUTER_API_KEY) {
     throw new Error(
-      "No Gemini API keys configured. Please set GEMINI_API_KEY_1 in your .env file.",
+      "No API keys configured. Please set GEMINI_API_KEY_1 or OPENROUTER_API_KEY in your .env file."
     );
   }
 
@@ -1313,8 +1313,27 @@ async function callAI(systemPrompt, userPrompt, base64Images = []) {
     }
   }
 
+  // Fallback to OpenRouter if configured
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  if (openRouterKey) {
+    try {
+      console.log(`⚠️ All Gemini keys failed. Falling back to OpenRouter API...`);
+      return await tryKeyOnce(
+        openRouterKey,
+        systemPrompt,
+        userPrompt,
+        base64Images,
+        process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
+        process.env.OPENROUTER_MODEL || "z-ai/glm-5.2:free"
+      );
+    } catch (err) {
+      console.error(`❌ OpenRouter fallback failed: ${err.message}`);
+      throw new Error(`OpenRouter fallback failed: ${err.message}`);
+    }
+  }
+
   throw new Error(
-    `All ${pool.length} Gemini API key(s) are currently unavailable. Please try again in a moment.`,
+    `All ${pool.length} Gemini API key(s) are currently unavailable. Please try again in a moment.`
   );
 }
 

@@ -427,7 +427,7 @@ function isLightBg(C) {
 | **Percentage breakdown / pie chart** | `addPieChartSlide` §32 | `addBarChartSlide` §15 | `addKpiGrid` §9 | Use only for 2–6 mutually exclusive categories that sum to 100%. Use bars for more categories, values that do not total 100%, or close comparisons. |
 | **Trends over time / continuous data** | `addLineChartSlide` §33 | `addBarChartSlide` §15 | `addDataTable` §29 | Use for 4+ ordered time points where direction/rate of change matters. Use bars for discrete periods and a table when values must be read exactly. |
 | **Definitions / vocabulary** | `addVocabGrid` §21 | `addCategoryListColumns` §14B | `addDataTable` §29 | Use for term+definition pairs (glossary, key terms). |
-| **Quiz / multiple choice question** | `addQuizSlide` §22 | — | — | Use for assessment, review, or interactive engagement slides. |
+| **Quiz / multiple choice question** | `addQuizSlide` §22 | `addQuizAnswerSlide` §22B | — | Use for assessment, review, or interactive engagement slides. Use answer slide to reveal correct answer. |
 | **Ordered list of key points** | `addIconListWithLines` §23 | `addSummaryOverview` §28 | `addCardGrid3` §7 | Use icon list for principles/values. Use summary for chapter recaps. |
 | **Inspirational quote / key message** | `addQuoteSlide` §24 | `addStatCallout` §8 | — | Use for impactful quotes, concluding thoughts, or mission statements. |
 | **Overview with visual + list** | `addSplitInfoImage` §30 | `addLeftPanelIconList` §25 | `addIconListWithLines` §23 | Use the split layout when a real relevant image is available. Use the left panel when an illustrative icon/emoji is sufficient; never use an empty image placeholder as decoration. |
@@ -1454,6 +1454,45 @@ function addQuizSlide(pres, question, options, C) {
     // Option box
     slide.addShape('roundRect', { x: 2.7, y, w: 8.13, h: rowH, rectRadius: 0.1, fill: { color: C.cardBg }, line: { color: C.border, width: 1 } });
     slide.addText(opt, { x: 2.9, y, w: 7.8, h: rowH, valign: 'middle', fontSize: 18, color: C.cardText, fontFace: detectFont(opt) });
+  });
+
+  return slide;
+}
+```
+
+---
+
+## §22B. Quiz Slide Answer Reveal
+
+```javascript
+function addQuizAnswerSlide(pres, question, options, correctAnswerIndex, C) {
+  let slide = pres.addSlide();
+  slide.background = { color: C.bg };
+  addHeaderBar(slide, 'Quiz / Answer Reveal', C);
+
+  slide.addText(question, { x: 1.0, y: 1.5, w: 11.33, h: 1.5, align: 'center', valign: 'middle', fontSize: 32, bold: true, color: isLightBg(C) ? C.textDark : C.textLight, fontFace: detectFont(question, 'title') });
+
+  const n = options.length;
+  const yStart = 3.5, gap = 0.2, rowH = 0.8;
+
+  options.forEach((opt, i) => {
+    const y = yStart + i * (rowH + gap);
+    const prefix = String.fromCharCode(65 + i);
+    
+    const isCorrect = (i === correctAnswerIndex);
+    const badgeColor = isCorrect ? C.primary : C.accent;
+    const badgeTextColor = isCorrect ? C.textLight : C.textLight;
+    const boxBg = isCorrect ? C.primary : C.cardBg;
+    const boxBorder = isCorrect ? C.primary : C.border;
+    const boxTextColor = isCorrect ? C.textLight : C.cardText;
+    
+    // Option letter badge circle
+    slide.addShape('ellipse', { x: 2.0, y: y + 0.1, w: 0.55, h: 0.55, fill: { color: badgeColor }, line: { type: 'none' } });
+    slide.addText(prefix, { x: 2.0, y: y + 0.1, w: 0.55, h: 0.55, align: 'center', valign: 'middle', fontSize: 16, bold: true, color: badgeTextColor, fontFace: FONTS.englishTitle });
+
+    // Option box
+    slide.addShape('roundRect', { x: 2.7, y, w: 8.13, h: rowH, rectRadius: 0.1, fill: { color: boxBg }, line: { color: boxBorder, width: 1 } });
+    slide.addText(opt, { x: 2.9, y, w: 7.8, h: rowH, valign: 'middle', fontSize: 18, color: boxTextColor, fontFace: detectFont(opt), bold: isCorrect });
   });
 
   return slide;
