@@ -1,25 +1,4 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
+.env
 node_modules/
-/node_modules/
-**/node_modules/
-
-# Test / scratch files
-test*.js
-test*.pdf
-
-# Excel temp lock files (created when file is open in Excel)
-uploads/~$*.xlsx
-~$*.xlsx
-
-# Local/server generated files
-.well-known/
-.git/
-tmp/
-.htaccess
-.ftpquota
-stderr.log
-.idea
-server.crt
-server.key
+output/
+uploads/
