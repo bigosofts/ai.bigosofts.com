@@ -5,6 +5,8 @@ node_modules/
 /node_modules/
 **/node_modules/
 .env
+/data
+
 
 # Test / scratch files
 test*.js
