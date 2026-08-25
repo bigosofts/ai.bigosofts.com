@@ -266,30 +266,51 @@ app.post("/api/request-access", async (req, res) => {
     otpStore.set(email + "|" + page, { otp, name, age, page, expiresAt });
 
     // Send admin email
-    const adminHtml = `<p>User trying to access ${page}:</p><ul><li><strong>Name:</strong> ${name}</li><li><strong>Email:</strong> ${email}</li><li><strong>Age:</strong> ${age || "-"}</li></ul>`;
-    await fetch("https://mailer.bigosofts.com/send-mail", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to: "bigosofts@gmail.com",
-        subject: `[BigOSofts] Access attempt: ${page} — from ${name}`,
-        text: `User ${name} <${email}> (age: ${age || "-"}) is attempting to access ${page}.`,
-        html: adminHtml,
-      }),
-    });
+    try {
+      const adminHtml = `<p>User trying to access ${page}:</p><ul><li><strong>Name:</strong> ${name}</li><li><strong>Email:</strong> ${email}</li><li><strong>Age:</strong> ${age || "-"}</li></ul>`;
+      await fetch("https://mailer.bigosofts.com/send-mail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: "bigosofts@gmail.com",
+          subject: `[BigOSofts] Access attempt: ${page} — from ${name}`,
+          text: `User ${name} <${email}> (age: ${age || "-"}) is attempting to access ${page}.`,
+          html: adminHtml,
+        }),
+      });
+    } catch (adminErr) {
+      console.error("Admin notification email failed to send:", adminErr.message);
+    }
+
+    // Always log the OTP to the server console for local testing and debugging
+    console.log(`\n🔑 [OTP FALLBACK] Generated OTP for ${email} on ${page}: ${otp}\n`);
 
     // Send client email with OTP
-    const clientHtml = `<p>Hi ${name},</p><p>Your one-time code to access BigOSofts ${page} is:</p><h2 style="letter-spacing:4px">${otp}</h2><p>This code expires in 10 minutes. If you didn't request this, ignore this email.</p>`;
-    await fetch("https://mailer.bigosofts.com/send-mail", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to: email,
-        subject: "Your BigOSofts access code",
-        text: `Hi ${name}, your access code is ${otp}`,
-        html: clientHtml,
-      }),
-    });
+    let clientMailSent = false;
+    try {
+      const clientHtml = `<p>Hi ${name},</p><p>Your one-time code to access BigOSofts ${page} is:</p><h2 style="letter-spacing:4px">${otp}</h2><p>This code expires in 10 minutes. If you didn't request this, ignore this email.</p>`;
+      await fetch("https://mailer.bigosofts.com/send-mail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: email,
+          subject: "Your BigOSofts access code",
+          text: `Hi ${name}, your access code is ${otp}`,
+          html: clientHtml,
+        }),
+      });
+      clientMailSent = true;
+    } catch (clientErr) {
+      console.error("Client OTP email failed to send:", clientErr.message);
+    }
+
+    if (!clientMailSent) {
+      return res.json({
+        success: true,
+        message: "OTP generated (Check server console: mailer service connection failed)",
+        devFallback: true
+      });
+    }
 
     return res.json({ success: true, message: "OTP sent" });
   } catch (err) {
