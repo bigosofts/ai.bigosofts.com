@@ -7,6 +7,8 @@ node_modules/
 .env
 /data
 
+/output
+/uploads
 
 # Test / scratch files
 test*.js
