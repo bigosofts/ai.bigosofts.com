@@ -990,16 +990,62 @@ function createPaletteVariant(aiCode, palette, outputPath) {
   return `${variantCode}\n\npres.writeFile({ fileName: '${safeOutputPath}' })\n  .then(() => console.log('Done'))\n  .catch(err => { console.error(err); process.exitCode = 1; });\n`;
 }
 
+const MAX_CONCURRENT_GENERATORS = 4;
+const GENERATOR_TIMEOUT_MS = 300_000;
+const GENERATOR_KILL_GRACE_MS = 5_000;
+const activeGeneratorProcesses = new Set();
+let activeGeneratorCount = 0;
+const generatorWaitQueue = [];
+
+function acquireGeneratorSlot() {
+  if (activeGeneratorCount < MAX_CONCURRENT_GENERATORS) {
+    activeGeneratorCount++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => generatorWaitQueue.push(resolve));
+}
+
+function releaseGeneratorSlot() {
+  const next = generatorWaitQueue.shift();
+  if (next) next();
+  else activeGeneratorCount--;
+}
+
+function terminateGeneratorTree(child, signal) {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      try { child.kill(signal); } catch (killError) {
+        if (killError.code !== "ESRCH") console.error("Renderer termination failed:", killError.message);
+      }
+    }
+  }
+}
+
+// Detached POSIX renderers run in their own process group so timeouts and
+// server shutdown can clean up the renderer and any processes it starts.
+process.once("exit", () => {
+  for (const child of activeGeneratorProcesses) {
+    terminateGeneratorTree(child, "SIGTERM");
+  }
+});
+
 function runGeneratorScript(scriptPath) {
-  return new Promise((resolve, reject) => {
+  return acquireGeneratorSlot().then(() => new Promise((resolve, reject) => {
     // Use process.execPath instead of 'node' so child processes work on
     // cPanel/Passenger where the node binary isn't in the default PATH.
-    const nodeExecutable = process.execPath;
-    execFile(
-      nodeExecutable,
+    const child = execFile(
+      process.execPath,
       [scriptPath],
-      { timeout: 300_000 },
+      { detached: process.platform !== "win32" },
       (error, stdout, stderr) => {
+        clearTimeout(timeout);
+        if (!timedOut) clearTimeout(forceKillTimeout);
+        activeGeneratorProcesses.delete(child);
+        releaseGeneratorSlot();
         if (error) {
           console.error(`Execution error: ${error}\nStderr: ${stderr}`);
           reject(
@@ -1010,7 +1056,20 @@ function runGeneratorScript(scriptPath) {
         resolve(stdout);
       },
     );
-  });
+    activeGeneratorProcesses.add(child);
+    let forceKillTimeout;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminateGeneratorTree(child, "SIGTERM");
+      forceKillTimeout = setTimeout(
+        () => terminateGeneratorTree(child, "SIGKILL"),
+        GENERATOR_KILL_GRACE_MS,
+      );
+      forceKillTimeout.unref();
+    }, GENERATOR_TIMEOUT_MS);
+    timeout.unref();
+  }));
 }
 
 // ----------------------------------------------------------------------------
