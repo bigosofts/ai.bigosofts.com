@@ -6,9 +6,10 @@ node_modules/
 **/node_modules/
 .env
 /data
-
+.htaccess
 /output
 /uploads
+/data/authorized_users.json
 
 # Test / scratch files
 test*.js
