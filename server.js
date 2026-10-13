@@ -140,11 +140,6 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 // Serve uploaded images as static files
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-// Ensure the JS generator script is available
-if (!fs.existsSync(path.join(__dirname, "generate_test.js"))) {
-  console.error("Missing generate_test.js to parse the skill file.");
-}
-
 // ----------------------------------------------------------------------------
 // Multer Configuration for Image Uploads
 // ----------------------------------------------------------------------------
@@ -991,8 +986,10 @@ function createPaletteVariant(aiCode, palette, outputPath) {
 }
 
 const MAX_CONCURRENT_GENERATORS = 4;
+const MAX_QUEUED_GENERATORS = 8;
 const GENERATOR_TIMEOUT_MS = 300_000;
 const GENERATOR_KILL_GRACE_MS = 5_000;
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
 const activeGeneratorProcesses = new Set();
 let activeGeneratorCount = 0;
 const generatorWaitQueue = [];
@@ -1001,6 +998,9 @@ function acquireGeneratorSlot() {
   if (activeGeneratorCount < MAX_CONCURRENT_GENERATORS) {
     activeGeneratorCount++;
     return Promise.resolve();
+  }
+  if (generatorWaitQueue.length >= MAX_QUEUED_GENERATORS) {
+    return Promise.reject(new Error("The presentation renderer is busy. Please try again shortly."));
   }
   return new Promise((resolve) => generatorWaitQueue.push(resolve));
 }
@@ -1013,9 +1013,23 @@ function releaseGeneratorSlot() {
 
 function terminateGeneratorTree(child, signal) {
   if (!child || !child.pid) return;
+  if (process.platform === "win32") {
+    // child.kill() only targets the Node renderer on Windows. taskkill /T
+    // also terminates descendants that renderer code may have started.
+    execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      timeout: WINDOWS_TREE_KILL_TIMEOUT_MS,
+    }, (error) => {
+      if (error && error.code !== "ESRCH" && error.code !== "ENOENT") {
+        try { child.kill(signal); } catch (killError) {
+          if (killError.code !== "ESRCH") console.error("Renderer termination failed:", killError.message);
+        }
+      }
+    });
+    return;
+  }
   try {
-    if (process.platform !== "win32") process.kill(-child.pid, signal);
-    else child.kill(signal);
+    process.kill(-child.pid, signal);
   } catch (error) {
     if (error.code !== "ESRCH") {
       try { child.kill(signal); } catch (killError) {
@@ -1043,13 +1057,15 @@ function runGeneratorScript(scriptPath) {
       { detached: process.platform !== "win32" },
       (error, stdout, stderr) => {
         clearTimeout(timeout);
-        if (!timedOut) clearTimeout(forceKillTimeout);
+        clearTimeout(forceKillTimeout);
         activeGeneratorProcesses.delete(child);
         releaseGeneratorSlot();
         if (error) {
           console.error(`Execution error: ${error}\nStderr: ${stderr}`);
           reject(
-            new Error("Failed to generate a PPTX variant during rendering."),
+            new Error(timedOut
+              ? "Presentation rendering exceeded the 5-minute time limit."
+              : "Failed to generate a PPTX variant during rendering."),
           );
           return;
         }
