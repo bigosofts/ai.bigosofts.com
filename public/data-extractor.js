@@ -234,6 +234,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       generateBtn.disabled = true;
+      lastRenderedStateKey = "";
       document.getElementById("btnContent").style.display = "none";
       document.getElementById("btnLoading").style.display = "flex";
 
@@ -258,11 +259,11 @@ document.addEventListener("DOMContentLoaded", () => {
         let allResults = [{ 
           batch: 1, 
           result: data.result, 
-          status: totalBatches === 1 ? "complete" : "loading" 
+          status: "complete" 
         }];
 
-        // Display first result immediately
-        showBatchResults(allResults, totalBatches, 1);
+        // Display first result immediately (mark Batch 1 complete, and show Batch 2 loading if more batches)
+        showBatchResults(allResults, totalBatches, totalBatches > 1 ? 2 : 1, totalBatches > 1, null);
         showView("result");
 
         // Poll for remaining batches if more than one batch
@@ -281,42 +282,76 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Poll for batch results
-  async function pollBatchResults(batchId, allResults, totalBatches) {
-    let currentBatch = 1;
-    let maxAttempts = 120; // 2 minutes max
-    let attempts = 0;
+  // Poll for batch results with robust timeout and status handling
+  async function pollBatchResults(batchId, initialResults, totalBatches) {
+    let allResults = [...initialResults];
+    const maxPollTimeMs = 15 * 60 * 1000; // 15 minutes timeout
+    const pollIntervalMs = 1500; // Poll every 1.5 seconds
+    const startTime = Date.now();
+    let consecutiveErrors = 0;
 
-    while (currentBatch < totalBatches && attempts < maxAttempts) {
-      attempts++;
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
+    while (Date.now() - startTime < maxPollTimeMs) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
       try {
         const response = await fetch(`/api/get-batch-result/${batchId}`);
+        if (!response.ok) {
+          consecutiveErrors++;
+          if (consecutiveErrors > 20) {
+            showBatchResults(allResults, totalBatches, totalBatches, false, "Unable to communicate with extraction server. Please check your network.");
+            break;
+          }
+          continue;
+        }
+
+        consecutiveErrors = 0;
         const data = await response.json();
 
-        if (data.success && data.results.length > allResults.length) {
-          // New results available
-          allResults = data.results;
-          showBatchResults(allResults, totalBatches, data.currentBatch);
-          currentBatch = data.currentBatch;
-        }
+        if (data.success) {
+          if (Array.isArray(data.results) && data.results.length > 0) {
+            allResults = data.results;
+          }
 
-        // All batches complete
-        if (!data.pending) {
-          // Mark all fetched batches as complete
-          allResults = allResults.map(r => ({ ...r, status: "complete" }));
-          showBatchResults(allResults, totalBatches, totalBatches);
-          break;
+          const currentBatchNumber = data.currentBatch || (allResults.length + 1);
+          showBatchResults(allResults, totalBatches, currentBatchNumber, data.pending, data.error);
+
+          // If the server reported a fatal error
+          if (data.error) {
+            console.error("Batch processing error reported by server:", data.error);
+            break;
+          }
+
+          // All batches completed
+          if (!data.pending) {
+            break;
+          }
         }
       } catch (err) {
-        console.warn("Polling error:", err);
+        console.warn("Polling warning:", err.message);
+        consecutiveErrors++;
+        if (consecutiveErrors > 25) {
+          showBatchResults(allResults, totalBatches, totalBatches, false, "Connection interrupted while fetching remaining batches.");
+          break;
+        }
       }
     }
   }
 
-  // Display batch results progressively
-  function showBatchResults(results, totalBatches, currentBatch) {
+  let lastRenderedStateKey = "";
+
+  // Display batch results progressively with professional animation and card UI
+  function showBatchResults(results, totalBatches, currentBatch, isPending = false, batchError = null) {
+    const completedBatchesCount = results.filter(r => r.status === "complete").length;
+    const isFullyComplete = completedBatchesCount >= totalBatches && !isPending && !batchError;
+    const progressPercent = Math.min(100, Math.round((completedBatchesCount / totalBatches) * 100));
+
+    // Anti-flicker guard: do not re-render DOM if the batch state has not changed
+    const stateKey = `${results.length}_${completedBatchesCount}_${currentBatch}_${isPending}_${Boolean(batchError)}`;
+    if (stateKey === lastRenderedStateKey) {
+      return;
+    }
+    lastRenderedStateKey = stateKey;
+
     const converter = new showdown.Converter({
       tables: true,
       strikethrough: true,
@@ -326,33 +361,147 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resultContent = document.getElementById("resultContent");
 
-    // Check if all batches are completed
-    const isFullyComplete = results.length === totalBatches && results.every(r => r.status === "complete");
-
-    // Build batched result display
     let html = "";
+
+    // ─── Top Progress Banner ───
     if (isFullyComplete) {
-      html += `<div class="batch-progress complete">✅ All ${totalBatches} batch(es) completed successfully!</div>`;
+      html += `
+        <div class="de-progress-banner complete">
+          <div class="de-progress-header">
+            <div class="de-progress-title">
+              <span class="de-badge-pill success">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                Complete
+              </span>
+              <span>All ${totalBatches} batch${totalBatches > 1 ? "es" : ""} extracted successfully</span>
+            </div>
+            <span class="de-progress-pct">100%</span>
+          </div>
+          <div class="de-progress-track">
+            <div class="de-progress-fill success" style="width: 100%"></div>
+          </div>
+        </div>
+      `;
+    } else if (batchError) {
+      html += `
+        <div class="de-progress-banner error">
+          <div class="de-progress-header">
+            <div class="de-progress-title">
+              <span class="de-badge-pill error">⚠ Notice</span>
+              <span>Extraction stopped: ${escapeHtml(batchError)}</span>
+            </div>
+            <span class="de-progress-pct">${progressPercent}%</span>
+          </div>
+          <div class="de-progress-track">
+            <div class="de-progress-fill error" style="width: ${progressPercent}%"></div>
+          </div>
+        </div>
+      `;
     } else {
-      html += `<div class="batch-progress">📊 Processing: Batch ${currentBatch} of ${totalBatches}</div>`;
+      const activeBatchNum = Math.min(totalBatches, Math.max(currentBatch, completedBatchesCount + 1));
+      html += `
+        <div class="de-progress-banner active">
+          <div class="de-progress-header">
+            <div class="de-progress-title">
+              <span class="de-badge-pill processing">
+                <span class="de-pulse-dot"></span>
+                Processing
+              </span>
+              <span>Extracting Batch ${activeBatchNum} of ${totalBatches}...</span>
+            </div>
+            <span class="de-progress-pct">${progressPercent}%</span>
+          </div>
+          <div class="de-progress-track">
+            <div class="de-progress-fill active" style="width: ${Math.max(15, progressPercent)}%"></div>
+          </div>
+        </div>
+      `;
     }
 
-    results.forEach((batchItem, index) => {
+    // ─── Render Completed Batch Cards ───
+    results.forEach((batchItem) => {
       const isComplete = batchItem.status === "complete";
       html += `
         <div class="batch-result-card ${isComplete ? "complete" : "loading"}">
           <div class="batch-header">
-            <span class="batch-number">Batch ${batchItem.batch}</span>
-            ${isComplete ? '<span class="batch-status">✓ Complete</span>' : '<span class="batch-status loading">⏳ Processing...</span>'}
+            <div class="batch-header-left">
+              <span class="batch-number">Batch ${batchItem.batch}</span>
+              <span class="batch-badge">${isComplete ? "Extracted Content" : "In Progress"}</span>
+            </div>
+            <div class="batch-header-right">
+              ${isComplete
+                ? `<span class="batch-status-pill success">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    Completed
+                   </span>`
+                : `<span class="batch-status-pill loading">
+                    <svg class="batch-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
+                      <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path>
+                    </svg>
+                    Processing...
+                   </span>`
+              }
+            </div>
           </div>
           <div class="batch-content">
-            ${converter.makeHtml(batchItem.result)}
+            ${converter.makeHtml(batchItem.result || "")}
           </div>
         </div>
       `;
     });
 
+    // ─── Render Active Processing Skeleton Card for Next Batch ───
+    if (!isFullyComplete && !batchError && completedBatchesCount < totalBatches) {
+      const nextBatchNumber = completedBatchesCount + 1;
+      html += `
+        <div class="batch-result-card active-processing">
+          <div class="batch-header">
+            <div class="batch-header-left">
+              <span class="batch-number">Batch ${nextBatchNumber}</span>
+              <span class="batch-badge">AI Vision & OCR</span>
+            </div>
+            <div class="batch-header-right">
+              <span class="batch-status-pill loading">
+                <svg class="batch-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
+                  <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path>
+                </svg>
+                Extracting Batch ${nextBatchNumber}...
+              </span>
+            </div>
+          </div>
+          <div class="batch-shimmer-content">
+            <div class="de-shimmer-line title"></div>
+            <div class="de-shimmer-line text-lg"></div>
+            <div class="de-shimmer-line text-md"></div>
+            <div class="de-shimmer-line text-sm"></div>
+            <div class="de-shimmer-grid">
+              <div class="de-shimmer-col"></div>
+              <div class="de-shimmer-col"></div>
+              <div class="de-shimmer-col"></div>
+            </div>
+            <p class="de-shimmer-caption">AI is reading pages and structuring tables for Batch ${nextBatchNumber}...</p>
+          </div>
+        </div>
+      `;
+    }
+
     resultContent.innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   // ─── Copy Button ───

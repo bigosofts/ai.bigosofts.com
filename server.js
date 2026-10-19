@@ -15,7 +15,7 @@ const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 const multer = require("multer");
 const sharp = require("sharp");
 sharp.cache(false);
@@ -382,7 +382,241 @@ app.post("/api/upload-file", upload.single("file"), (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// API: Extract Data
+// PDF & Document Data Extraction Engine (Hybrid: Native Text + High-Res Vision)
+// ----------------------------------------------------------------------------
+
+/**
+ * Extracts native digital selectable text from a PDF file using pdfjs-dist.
+ * Returns { isNativeText: boolean, numPages: number, pages: Array<{ pageNum: number, text: string }>, totalChars: number }
+ */
+async function extractPdfText(filePath, maxPages = 50) {
+  try {
+    const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const standardFontPath = path
+      .join(__dirname, "node_modules", "pdfjs-dist", "standard_fonts", "/")
+      .replace(/\\/g, "/");
+
+    const data = new Uint8Array(fs.readFileSync(filePath));
+    const loadingTask = getDocument({
+      data,
+      standardFontDataUrl: standardFontPath,
+      disableFontFace: true,
+      useSystemFonts: true,
+    });
+    const pdfDoc = await loadingTask.promise;
+    const numPages = Math.min(pdfDoc.numPages, maxPages);
+
+    let totalChars = 0;
+    const pages = [];
+
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      const page = await pdfDoc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+
+      let lastY = null;
+      let pageText = "";
+      for (const item of textContent.items) {
+        if (!item.str) continue;
+        if (lastY !== null && Math.abs(item.transform[5] - lastY) > 5) {
+          pageText += "\n";
+        } else if (pageText && !pageText.endsWith(" ") && !pageText.endsWith("\n")) {
+          pageText += " ";
+        }
+        pageText += item.str;
+        lastY = item.transform[5];
+      }
+      pageText = pageText.trim();
+      totalChars += pageText.length;
+      pages.push({ pageNum, text: pageText });
+    }
+
+    const averageChars = pages.length > 0 ? totalChars / pages.length : 0;
+    // Native digital text PDF if average page has more than 40 characters
+    const isNativeText = averageChars > 40;
+
+    return {
+      isNativeText,
+      numPages: pdfDoc.numPages,
+      pages,
+      totalChars,
+    };
+  } catch (err) {
+    console.warn("⚠️ Native PDF text extraction warning:", err.message);
+    return { isNativeText: false, error: err.message, pages: [] };
+  }
+}
+
+/**
+ * Prepares extraction units (native text pages or high-res images) from uploaded files.
+ */
+async function prepareExtractionUnits(filePaths) {
+  const units = [];
+
+  for (const filePath of filePaths) {
+    if (!fs.existsSync(filePath)) continue;
+
+    const ext = path.extname(filePath).toLowerCase();
+    const fileName = path.basename(filePath);
+
+    if (ext === ".pdf") {
+      // 1. First attempt instant native digital text extraction
+      const textResult = await extractPdfText(filePath, 50);
+
+      if (textResult.isNativeText && textResult.pages.length > 0) {
+        console.log(`📄 [Fast-Path] Found digital text in ${fileName} (${textResult.pages.length} pages, ${textResult.totalChars} chars). Skipping heavy image rasterization.`);
+        for (const p of textResult.pages) {
+          units.push({
+            type: "text",
+            fileName,
+            pageNum: p.pageNum,
+            text: p.text,
+          });
+        }
+        continue;
+      }
+
+      // 2. Fallback: Scanned / Image-only PDF -> Render high-res pages for Vision OCR
+      console.log(`📷 [Vision OCR] Scanned PDF detected in ${fileName}. Rendering high-res pages for AI vision...`);
+      const { pdf } = await import("pdf-to-img");
+      const standardFontPath = path
+        .join(__dirname, "node_modules", "pdfjs-dist", "standard_fonts", "/")
+        .replace(/\\/g, "/");
+
+      const document = await pdf(filePath, {
+        scale: 1.5, // 150-200 DPI equivalent for clean OCR
+        standardFontDataUrl: standardFontPath,
+      });
+
+      let pageCount = 0;
+      for await (const pageBuffer of document) {
+        pageCount++;
+        if (pageCount > 50) break;
+
+        try {
+          // Optimized for AI text extraction: 1600px max, quality 80%, with sharpening for OCR
+          const enhanced = await sharp(pageBuffer)
+            .resize({
+              width: 1600,
+              height: 1600,
+              fit: "inside",
+              withoutEnlargement: true,
+            })
+            .normalize()
+            .sharpen({ sigma: 0.8 })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+
+          units.push({
+            type: "image",
+            fileName,
+            pageNum: pageCount,
+            base64: enhanced.toString("base64"),
+          });
+        } catch (sharpErr) {
+          console.warn(`Sharp processing failed on page ${pageCount}, using raw buffer:`, sharpErr.message);
+          units.push({
+            type: "image",
+            fileName,
+            pageNum: pageCount,
+            base64: pageBuffer.toString("base64"),
+          });
+        }
+      }
+    } else {
+      // Image file (PNG, JPG, WEBP, etc.)
+      try {
+        const enhanced = await sharp(filePath)
+          .resize({
+            width: 1600,
+            height: 1600,
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .normalize()
+          .sharpen({ sigma: 0.8 })
+          .jpeg({ quality: 80 })
+          .toBuffer();
+
+        units.push({
+          type: "image",
+          fileName,
+          pageNum: 1,
+          base64: enhanced.toString("base64"),
+        });
+      } catch (sharpErr) {
+        console.warn(`Sharp processing failed on image, using raw buffer:`, sharpErr.message);
+        const rawBuffer = fs.readFileSync(filePath);
+        units.push({
+          type: "image",
+          fileName,
+          pageNum: 1,
+          base64: rawBuffer.toString("base64"),
+        });
+      }
+    }
+  }
+
+  return units;
+}
+
+/**
+ * Executes AI data extraction for a batch of units (text or images)
+ * with seamless Markdown formatting and syntax verification.
+ */
+async function executeBatchExtraction(units, batchIndex, totalBatches, userInstruction = "", previousTail = "") {
+  const textUnits = units.filter((u) => u.type === "text");
+  const imageUnits = units.filter((u) => u.type === "image");
+  const base64Images = imageUnits.map((u) => u.base64);
+
+  let userContent = "";
+
+  if (userInstruction && userInstruction.trim()) {
+    userContent += `User Extraction Goal:\n${userInstruction.trim()}\n\n`;
+  }
+
+  if (previousTail && previousTail.trim()) {
+    userContent += `--- CONTINUATION CONTEXT ---\nThe previous section concluded with:\n"...${previousTail.slice(-300).trim()}..."\nContinue extracting seamlessly from this point without repeating content.\n-----------------------------\n\n`;
+  }
+
+  if (textUnits.length > 0) {
+    userContent += `--- DOCUMENT TEXT CONTENT (Batch ${batchIndex} of ${totalBatches}) ---\n`;
+    for (const u of textUnits) {
+      userContent += `\n### [${u.fileName} - Page ${u.pageNum}]\n${u.text}\n`;
+    }
+    userContent += `\n----------------------------------------------------\n`;
+  }
+
+  if (base64Images.length > 0) {
+    userContent += `\nPlease also extract and structure all information accurately from the ${base64Images.length} attached document image(s).\n`;
+  }
+
+  userContent += `\nExtract all information faithfully. Format the output cleanly using Markdown (tables, bullet points, headings, and bold text). Return raw Markdown only.`;
+
+  const systemPrompt = `You are a world-class Data Extractor AI. Your job is to extract all data and information accurately from the provided document content and/or images.
+CRITICAL RULES:
+1. Never invent, alter, or falsify names, dates, numbers, financial amounts, or facts.
+2. Fix only obvious spelling mistakes or grammatical typos in extracted text.
+3. Structure complex or tabular data into well-formatted Markdown tables.
+4. Use clear headings, bullet points, and numbered lists where appropriate.
+5. Return ONLY clean, valid raw Markdown.`;
+
+  const rawResult = await callAI(systemPrompt, userContent, base64Images);
+  if (!rawResult || !rawResult.trim()) {
+    throw new Error(`AI returned an empty response for Batch ${batchIndex}.`);
+  }
+
+  // Validate Markdown syntax and heal if broken
+  const validatedResult = await fixCodeSyntaxWithAI({
+    code: rawResult,
+    type: "markdown",
+    validatorFn: (code) => checkMarkdownSyntax(code),
+  });
+
+  return validatedResult;
+}
+
+// ----------------------------------------------------------------------------
+// API: Extract Data (Single Request)
 // ----------------------------------------------------------------------------
 app.post("/api/extract-data", async (req, res) => {
   try {
@@ -394,89 +628,13 @@ app.post("/api/extract-data", async (req, res) => {
       });
     }
 
-    const base64Images = [];
-
-    for (const filePath of filePaths) {
-      if (!fs.existsSync(filePath)) continue;
-
-      const ext = path.extname(filePath).toLowerCase();
-
-      if (ext === ".pdf") {
-        // LAZY LOAD pdf-to-img ONLY if it's a PDF.
-        // pdf-to-img depends on canvas/glib which causes thread crashes in cPanel.
-        const { pdf } = await import("pdf-to-img");
-        const standardFontPath = path
-          .join(__dirname, "node_modules", "pdfjs-dist", "standard_fonts", "/")
-          .replace(/\\/g, "/");
-        const document = await pdf(filePath, {
-          scale: 1.2, // Reduced from 1.5 for compression optimization (500-600 DPI equivalent)
-          standardFontDataUrl: standardFontPath,
-        });
-        let pageCount = 0;
-        for await (const pageBuffer of document) {
-          pageCount++;
-          if (pageCount > 20) break; // limit to 20 pages for batch processing
-          try {
-            // Optimized for AI text extraction: 900px max, quality 70%, with sharpening for OCR
-            const enhanced = await sharp(pageBuffer)
-              .resize({
-                width: 900,
-                height: 900,
-                fit: "inside",
-                withoutEnlargement: true,
-              })
-              .normalize()
-              .sharpen({ sigma: 1.0 }) // Enhance text clarity for OCR/AI processing
-              .jpeg({ quality: 70 })
-              .toBuffer();
-            base64Images.push(enhanced.toString("base64"));
-          } catch (sharpErr) {
-            console.warn(
-              "Sharp resizing failed on PDF page, falling back to raw buffer",
-              sharpErr.message,
-            );
-            base64Images.push(pageBuffer.toString("base64"));
-          }
-        }
-      } else {
-        try {
-          // Optimized for AI text extraction: 900px max, quality 70%, with sharpening for OCR
-          const enhanced = await sharp(filePath)
-            .resize({
-              width: 900,
-              height: 900,
-              fit: "inside",
-              withoutEnlargement: true,
-            })
-            .normalize()
-            .sharpen({ sigma: 1.0 }) // Enhance text clarity for OCR/AI processing
-            .jpeg({ quality: 70 })
-            .toBuffer();
-          base64Images.push(enhanced.toString("base64"));
-        } catch (sharpErr) {
-          console.warn(
-            "Sharp resizing failed on image, falling back to raw buffer",
-            sharpErr.message,
-          );
-          // If glib thread creation fails in sharp, we fallback to just reading the file directly
-          const rawBuffer = fs.readFileSync(filePath);
-          base64Images.push(rawBuffer.toString("base64"));
-        }
-      }
+    const units = await prepareExtractionUnits(filePaths);
+    if (units.length === 0) {
+      throw new Error("No valid document pages or images could be processed.");
     }
 
-    if (base64Images.length === 0) {
-      throw new Error("No valid images could be processed.");
-    }
-
-    const systemPrompt = `You are a world-class Data Extractor AI. Your job is to read the provided image(s) and extract all information accurately. 
-You must NEVER change, interpret, or alter the factual meaning of any data. Fix only spelling errors and grammar. 
-You may format the output beautifully using tables, bullet points, numbered lists, blockquotes, and section headings as appropriate. 
-Return the response in raw Markdown format.`;
-
-    const aiCode = await callAI(systemPrompt, prompt, base64Images);
-
-    res.json({ success: true, result: aiCode });
+    const result = await executeBatchExtraction(units, 1, 1, prompt, "");
+    res.json({ success: true, result });
   } catch (error) {
     console.error("Extraction error:", error);
     res.status(500).json({ success: false, error: error.message });
@@ -502,7 +660,7 @@ setInterval(
 
 // ----------------------------------------------------------------------------
 // API: Extract Data - Hybrid Progressive (Batch Processing)
-// First 5 images processed immediately, remaining batched asynchronously
+// First 5 items processed immediately, remaining batched asynchronously
 // ----------------------------------------------------------------------------
 app.post("/api/extract-batch", async (req, res) => {
   try {
@@ -514,18 +672,15 @@ app.post("/api/extract-batch", async (req, res) => {
       });
     }
 
-    // Convert all pages/images from all files to Base64 first
-    const allImages = await processImageBatch(filePaths);
-
-    if (allImages.length === 0) {
-      throw new Error("No valid images could be processed.");
+    const allUnits = await prepareExtractionUnits(filePaths);
+    if (allUnits.length === 0) {
+      throw new Error("No valid document pages or images could be processed.");
     }
 
     const batchId = uuidv4();
     const batchSize = 5;
-    const totalBatches = Math.ceil(allImages.length / batchSize);
+    const totalBatches = Math.ceil(allUnits.length / batchSize);
 
-    // Initialize batch store
     batchStore.set(batchId, {
       results: [],
       pending: true,
@@ -534,15 +689,16 @@ app.post("/api/extract-batch", async (req, res) => {
       createdAt: Date.now(),
     });
 
-    // Process first batch (5 images/pages) immediately
-    const firstBatchImages = allImages.slice(0, batchSize);
+    // Process first batch immediately for instant user feedback
+    const firstBatchUnits = allUnits.slice(0, batchSize);
+    const firstResult = await executeBatchExtraction(
+      firstBatchUnits,
+      1,
+      totalBatches,
+      prompt,
+      ""
+    );
 
-    const systemPrompt = `You are a world-class Data Extractor AI. Your job is to read the provided image(s) and extract all information accurately. 
-You must NEVER change, interpret, or alter the factual meaning of any data. Fix only spelling errors and grammar. 
-You may format the output beautifully using tables, bullet points, numbered lists, blockquotes, and section headings as appropriate. 
-Return the response in raw Markdown format.`;
-
-    const firstResult = await callAI(systemPrompt, prompt, firstBatchImages);
     batchStore.get(batchId).results.push({
       batch: 1,
       result: firstResult,
@@ -550,14 +706,8 @@ Return the response in raw Markdown format.`;
     });
 
     // Process remaining batches in background
-    if (allImages.length > batchSize) {
-      processRemainingBatches(
-        batchId,
-        allImages,
-        batchSize,
-        systemPrompt,
-        prompt,
-      );
+    if (allUnits.length > batchSize) {
+      processRemainingBatches(batchId, allUnits, batchSize, prompt, firstResult);
     } else {
       batchStore.get(batchId).pending = false;
     }
@@ -566,7 +716,7 @@ Return the response in raw Markdown format.`;
       success: true,
       batchId,
       totalBatches,
-      result: firstResult, // First result for immediate display
+      result: firstResult,
     });
   } catch (error) {
     console.error("Batch extraction error:", error);
@@ -574,34 +724,41 @@ Return the response in raw Markdown format.`;
   }
 });
 
-// Helper: Process remaining batches asynchronously
-async function processRemainingBatches(
-  batchId,
-  allImages,
-  batchSize,
-  systemPrompt,
-  prompt,
-) {
+// Helper: Process remaining batches asynchronously with sliding context
+async function processRemainingBatches(batchId, allUnits, batchSize, userInstruction, initialTail = "") {
   try {
     const batchData = batchStore.get(batchId);
     if (!batchData) return;
 
-    for (let i = batchSize; i < allImages.length; i += batchSize) {
-      const batchImages = allImages.slice(i, i + batchSize);
+    let previousTail = initialTail;
 
-      if (batchImages.length > 0) {
+    for (let i = batchSize; i < allUnits.length; i += batchSize) {
+      const batchUnits = allUnits.slice(i, i + batchSize);
+      if (batchUnits.length > 0) {
         const batchNumber = Math.floor(i / batchSize) + 1;
-        const result = await callAI(systemPrompt, prompt, batchImages);
+        batchData.currentBatch = batchNumber;
+        console.log(`[Batch Engine] Starting Batch ${batchNumber} of ${batchData.totalBatches} (${batchUnits.length} items)...`);
+        
+        const result = await executeBatchExtraction(
+          batchUnits,
+          batchNumber,
+          batchData.totalBatches,
+          userInstruction,
+          previousTail
+        );
+
         batchData.results.push({
           batch: batchNumber,
           result,
           status: "complete",
         });
-        batchData.currentBatch = batchNumber;
+        previousTail = result;
+        console.log(`[Batch Engine] Batch ${batchNumber} completed successfully.`);
       }
     }
 
     batchData.pending = false;
+    console.log(`[Batch Engine] All ${batchData.totalBatches} batches complete for session ${batchId}.`);
   } catch (error) {
     console.error("Background batch processing error:", error);
     if (batchStore.has(batchId)) {
@@ -611,69 +768,6 @@ async function processRemainingBatches(
   }
 }
 
-// Helper: Process image batch (similar to original extraction)
-async function processImageBatch(filePaths) {
-  const base64Images = [];
-
-  for (const filePath of filePaths) {
-    if (!fs.existsSync(filePath)) continue;
-
-    const ext = path.extname(filePath).toLowerCase();
-
-    if (ext === ".pdf") {
-      const { pdf } = await import("pdf-to-img");
-      const standardFontPath = path
-        .join(__dirname, "node_modules", "pdfjs-dist", "standard_fonts", "/")
-        .replace(/\\/g, "/");
-      const document = await pdf(filePath, {
-        scale: 1.2,
-        standardFontDataUrl: standardFontPath,
-      });
-      let pageCount = 0;
-      for await (const pageBuffer of document) {
-        pageCount++;
-        if (pageCount > 20) break;
-        try {
-          const enhanced = await sharp(pageBuffer)
-            .resize({
-              width: 900,
-              height: 900,
-              fit: "inside",
-              withoutEnlargement: true,
-            })
-            .normalize()
-            .sharpen({ sigma: 1.0 })
-            .jpeg({ quality: 70 })
-            .toBuffer();
-          base64Images.push(enhanced.toString("base64"));
-        } catch (sharpErr) {
-          base64Images.push(pageBuffer.toString("base64"));
-        }
-      }
-    } else {
-      try {
-        const enhanced = await sharp(filePath)
-          .resize({
-            width: 900,
-            height: 900,
-            fit: "inside",
-            withoutEnlargement: true,
-          })
-          .normalize()
-          .sharpen({ sigma: 1.0 })
-          .jpeg({ quality: 70 })
-          .toBuffer();
-        base64Images.push(enhanced.toString("base64"));
-      } catch (sharpErr) {
-        const rawBuffer = fs.readFileSync(filePath);
-        base64Images.push(rawBuffer.toString("base64"));
-      }
-    }
-  }
-
-  return base64Images;
-}
-
 // API: Poll for batch results
 app.get("/api/get-batch-result/:batchId", (req, res) => {
   try {
@@ -681,7 +775,7 @@ app.get("/api/get-batch-result/:batchId", (req, res) => {
     const batch = batchStore.get(batchId);
 
     if (!batch) {
-      return res.status(404).json({ success: false, error: "Batch not found" });
+      return res.status(404).json({ success: false, error: "Batch session not found or expired" });
     }
 
     res.json({
@@ -691,6 +785,7 @@ app.get("/api/get-batch-result/:batchId", (req, res) => {
       totalBatches: batch.totalBatches,
       currentBatch: batch.currentBatch,
       pending: batch.pending,
+      error: batch.error || null,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -870,11 +965,34 @@ Remember: Output ONLY RAW JAVASCRIPT CODE. Do not wrap in \`\`\`javascript or an
       "Creating the presentation structure and layout code",
       "Generating slide structure and layout instructions",
     );
-    const aiCode = await callAI(systemPrompt, content);
+    let aiCode = await callAI(systemPrompt, content);
 
     if (!aiCode || aiCode.trim() === "") {
       throw new Error("AI returned empty response.");
     }
+
+    // Step 2: Check code for syntax errors by node command, and auto-heal with AI if needed
+    sendStatus(
+      2,
+      48,
+      "Checking code syntax...",
+      "Verifying JavaScript syntax using Node.js compiler",
+      "Checking code for syntax errors",
+    );
+    aiCode = await fixCodeSyntaxWithAI({
+      code: aiCode,
+      type: "pptx",
+      validatorFn: (code) => checkPptxSyntax(code, skillContent),
+      onProgress: (msg) =>
+        sendStatus(
+          2,
+          52,
+          "Resolving syntax issue...",
+          msg,
+          "Self-healing syntax error",
+        ),
+    });
+
     sendStatus(
       2,
       55,
@@ -1157,7 +1275,19 @@ app.post("/api/generate-document", async (req, res) => {
       .join("\n");
     const systemPrompt = `You are a professional Word document architect. Turn the user's brief into a polished, faithful document plan. Choose an appropriate document archetype and layout based on the reference skill. Preserve all facts. Use supplied image DESCRIPTIONS only to decide placement; do not infer image content from filenames, URLs, upload paths, or other metadata. Do not change dates, values, names, or topic. Do not merge, drop, or reorder user data. Return ONLY valid JSON matching this schema:\n{"title":"string","subtitle":"string","documentType":"string","designPreset":"standard_business|formal_administrative_register|formal_letter|professional_cv|business_proposal","metadata":["Label: value"],"letterMeta":{"date":"string","recipientLines":["string"],"subject":"string","salutation":"string","closing":"string","signatory":"string","signatoryTitle":"string","signatoryOrg":"string"},"cvMeta":{"name":"string","title":"string","contact":[{"icon":"phone|email|link","value":"string"}],"education":[{"degree":"string","institution":"string","year":"string"}],"skills":["string"],"languages":["string"],"profile":"string","experience":[{"title":"string","company":"string","date":"string","bullets":["string"]}],"projects":[{"name":"string","description":"string","link":"string"}]},"proposalMeta":{"title":"string","subtitle":"string","preparedFor":"string","preparedBy":"string","date":"string"},"sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"numbered":["string"],"callout":"string","signatures":[{"role":"string","name":"string"}],"table":{"headers":["string"],"rows":[["string"]]},"bigNumberList":[{"number":"string","title":"string","text":"string"}],"dividedList":[{"title":"string","subtitle":"string"}]}],"imagePlacements":[{"imageIndex":1,"afterSection":0,"caption":"string","placement":"wide"}]}\nChoose professional_cv for modern two-column CVs or resumes. When using professional_cv, you MUST populate the cvMeta object with name, title, contact, education, skills, languages, profile, experience, and projects. Use the image (if provided) as the profile photo.\nChoose formal_letter for applications, দরখাস্ত, formal letters, cover letters, requests, complaints, or any correspondence addressed to a specific person or authority. When using formal_letter, you MUST populate the letterMeta object. The body paragraphs go in sections[0].paragraphs as usual.\nChoose formal_administrative_register for attendance, beneficiary, student/patient, field-report, official-record, or grouped register data. Use tables only for genuine comparable row/column data. Keep prose concise and well structured. Do not emit markdown or code.\nChoose business_proposal for pitches, digital marketing strategies, or highly styled project plans. Populate the proposalMeta object.\n\nREFERENCE SKILL:\n${skill}\n\nUSER IMAGES (descriptions only):\n${imageContext || "None"}`;
     const rawPlan = await callAI(systemPrompt, String(content));
-    const plan = parseDocumentPlan(rawPlan, content, images.length);
+    if (!rawPlan || !rawPlan.trim()) {
+      throw new Error("AI returned empty response for document plan.");
+    }
+
+    // Step 2: Check document plan for syntax errors by node command, and auto-heal with AI if needed
+    console.log("[DOCX] Checking document plan syntax with Node.js...");
+    const validatedRawPlan = await fixCodeSyntaxWithAI({
+      code: rawPlan,
+      type: "docx",
+      validatorFn: (code) => checkDocxSyntax(code),
+    });
+
+    const plan = parseDocumentPlan(validatedRawPlan, content, images.length);
     const buffer =
       plan.designPreset === "professional_cv"
         ? await buildCVDocx(plan, images)
@@ -1186,7 +1316,7 @@ app.post("/api/generate-document", async (req, res) => {
       createDocumentDebugScript(outputId, plan, images),
     );
     fs.writeFileSync(planJsonPath, JSON.stringify(plan, null, 2));
-    fs.writeFileSync(rawPlanPath, String(rawPlan).trim());
+    fs.writeFileSync(rawPlanPath, String(validatedRawPlan).trim());
 
     cleanupUploadedImages(uploadedFilePaths);
     res.json({
@@ -1278,12 +1408,21 @@ async function tryKeyOnce(apiKey, systemPrompt, userPrompt, base64Images = [], c
 
   let response;
   try {
-    response = await fetch(`${baseUrl}/chat/completions`, {
+    const isGoogle = baseUrl.includes("generativelanguage.googleapis.com");
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
+    if (isGoogle) {
+      headers["x-goog-api-key"] = apiKey;
+    }
+    const requestUrl = isGoogle
+      ? `${baseUrl}/chat/completions?key=${encodeURIComponent(apiKey)}`
+      : `${baseUrl}/chat/completions`;
+
+    response = await fetch(requestUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages: [
@@ -1321,8 +1460,10 @@ async function tryKeyOnce(apiKey, systemPrompt, userPrompt, base64Images = [], c
 function isFailoverError(err) {
   if (!err) return false;
   const msg = err.message || "";
-  // HTTP 400/403 = invalid/revoked key, 429 = rate limit, 500/503 = server error/busy
-  if (/HTTP (400|403|429|500|502|503|504)/.test(msg)) return true;
+  // HTTP 400, 401, 402, 403, 404, 429, 500, 502, 503, 504
+  if (/HTTP (400|401|402|403|404|429|500|502|503|504)/i.test(msg)) return true;
+  // Auth & key validity issues
+  if (/API key not valid|UNAUTHENTICATED|ACCESS_TOKEN|unauthorized|invalid api key|forbidden/i.test(msg)) return true;
   // Timeout / network abort
   if (
     err.name === "AbortError" ||
@@ -1346,7 +1487,7 @@ function isFailoverError(err) {
     )
   )
     return true;
-  return false;
+  return true; // Default to true in rotation pool so one bad key never halts the pool
 }
 
 /**
@@ -1390,20 +1531,13 @@ async function callAI(systemPrompt, userPrompt, base64Images = []) {
       return code;
     } catch (err) {
       lastError = err;
-      if (isFailoverError(err) && i < pool.length - 1) {
+      if (i < pool.length - 1) {
         console.warn(
-          `тЪая╕П  API (${keyMask}) failed (${err.message.slice(0, 80)}). Switching to next keyтАж`,
+          `⚠️  API (${keyMask}) failed (${err.message.slice(0, 100)}). Rotating to next key (${i + 2}/${pool.length})…`,
         );
-      } else if (!isFailoverError(err)) {
-        // Non-retryable error (e.g. bad auth, malformed request) тАФ fail fast
-        console.error(
-          `тЭМ API (${keyMask}) returned a non-retryable error: ${err.message}`,
-        );
-        throw err;
       } else {
-        // Last key also failed
         console.error(
-          `тЭМ All ${pool.length} API key(s) exhausted. Last error: ${err.message}`,
+          `❌ All ${pool.length} API key(s) in pool exhausted. Last error: ${err.message}`,
         );
       }
     }
@@ -1431,6 +1565,344 @@ async function callAI(systemPrompt, userPrompt, base64Images = []) {
   throw new Error(
     `All ${pool.length} Gemini API key(s) are currently unavailable. Please try again in a moment.`
   );
+}
+
+// ----------------------------------------------------------------------------
+// Syntax Verification via Node.js Commands & Self-Healing AI Loop
+// ----------------------------------------------------------------------------
+
+/**
+ * 1. Checks PPTX (pptxgenjs) JavaScript code for syntax errors using `node --check`.
+ * Validates the complete executable code without running side effects.
+ */
+function checkPptxSyntax(aiCode, skillContent = "") {
+  const tempFile = path.join(OUTPUT_DIR, `temp_syntax_pptx_${uuidv4()}.js`);
+  try {
+    let scriptToTest = aiCode;
+    if (skillContent) {
+      try {
+        scriptToTest = prepareExecutionCode(aiCode, skillContent);
+      } catch (prepErr) {
+        return {
+          valid: false,
+          error: `Failed to prepare execution code: ${prepErr.message}`,
+        };
+      }
+    }
+    fs.writeFileSync(tempFile, scriptToTest, "utf8");
+    execFileSync(process.execPath, ["--check", tempFile], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    return { valid: true };
+  } catch (err) {
+    return {
+      valid: false,
+      error: (err.stderr || err.stdout || err.message || "").trim(),
+    };
+  } finally {
+    if (fs.existsSync(tempFile)) {
+      try { fs.unlinkSync(tempFile); } catch (_) {}
+    }
+  }
+}
+
+/**
+ * 2. Checks DOCX document plan (JSON / JS object) for syntax errors using Node.js.
+ * Validates structure via `node --check` and verifies object / JSON parsing.
+ */
+function checkDocxSyntax(rawPlan) {
+  const cleaned = String(rawPlan || "")
+    .replace(/^```(?:json|javascript|js)?\s*/gim, "")
+    .replace(/```\s*$/gim, "")
+    .trim();
+
+  const tempJsFile = path.join(OUTPUT_DIR, `temp_syntax_docx_${uuidv4()}.js`);
+  const tempJsonFile = path.join(OUTPUT_DIR, `temp_syntax_docx_${uuidv4()}.json`);
+
+  try {
+    // Check JavaScript object syntax via node --check
+    fs.writeFileSync(tempJsFile, `const plan = ${cleaned};`, "utf8");
+    execFileSync(process.execPath, ["--check", tempJsFile], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+
+    // Check JSON / Object evaluation via Node process
+    fs.writeFileSync(tempJsonFile, cleaned, "utf8");
+    const nodeParseScript = `
+const fs = require('fs');
+const content = fs.readFileSync(process.argv[1], 'utf8');
+try {
+  JSON.parse(content);
+} catch (jsonErr) {
+  try {
+    new Function('return (' + content + ')');
+  } catch (jsErr) {
+    console.error('SyntaxError in DOCX document plan: ' + (jsonErr.message || jsErr.message));
+    process.exit(1);
+  }
+}
+process.exit(0);
+`;
+    execFileSync(process.execPath, ["-e", nodeParseScript, tempJsonFile], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+
+    return { valid: true };
+  } catch (err) {
+    return {
+      valid: false,
+      error: (err.stderr || err.stdout || err.message || "").trim(),
+    };
+  } finally {
+    if (fs.existsSync(tempJsFile)) {
+      try { fs.unlinkSync(tempJsFile); } catch (_) {}
+    }
+    if (fs.existsSync(tempJsonFile)) {
+      try { fs.unlinkSync(tempJsonFile); } catch (_) {}
+    }
+  }
+}
+
+/**
+ * 3. Checks HTML code (markup from Data Extractor) for syntax errors using Node.js.
+ * Validates matching tags, hierarchy, unclosed attribute quotes, and unclosed tags.
+ */
+function checkHtmlSyntax(htmlContent) {
+  const html = String(htmlContent || "");
+  // If no HTML tags are found in the content, it's plain text/markdown without HTML errors
+  if (!/<[a-zA-Z0-9]+[^>]*>/i.test(html)) {
+    return { valid: true };
+  }
+
+  const tempFile = path.join(OUTPUT_DIR, `temp_syntax_html_${uuidv4()}.html`);
+  fs.writeFileSync(tempFile, html, "utf8");
+
+  const htmlCheckerScript = `
+const fs = require('fs');
+const filePath = process.argv[1];
+const content = fs.readFileSync(filePath, 'utf8');
+
+const voidTags = new Set([
+  'area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr'
+]);
+
+const stack = [];
+const tagRegex = /<!--[\\s\\S]*?-->|<(\\/?)([a-zA-Z0-9\\-]+)([^>]*)(\\/?)>/g;
+let match;
+
+while ((match = tagRegex.exec(content)) !== null) {
+  if (match[0].startsWith('<!--')) continue;
+  const isClosing = !!match[1];
+  const tagName = match[2].toLowerCase();
+  const attrs = match[3] || '';
+  const isSelfClosing = !!match[4] || voidTags.has(tagName);
+
+  // Check unclosed attribute quotes
+  let inDouble = false;
+  let inSingle = false;
+  for (let i = 0; i < attrs.length; i++) {
+    const ch = attrs[i];
+    if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "'" && !inDouble) inSingle = !inSingle;
+  }
+  if (inDouble || inSingle) {
+    const line = content.substring(0, match.index).split('\\n').length;
+    console.error(\`\${filePath}:\${line}\\n\${match[0]}\\nSyntaxError: Unclosed attribute quote in HTML tag <\${tagName}>\`);
+    process.exit(1);
+  }
+
+  if (isClosing) {
+    if (voidTags.has(tagName)) continue;
+    if (stack.length === 0) {
+      const line = content.substring(0, match.index).split('\\n').length;
+      console.error(\`\${filePath}:\${line}\\n\${match[0]}\\nSyntaxError: Unexpected closing tag </\${tagName}> without matching opening tag\`);
+      process.exit(1);
+    }
+    const last = stack.pop();
+    if (last.tagName !== tagName) {
+      const line = content.substring(0, match.index).split('\\n').length;
+      console.error(\`\${filePath}:\${line}\\n\${match[0]}\\nSyntaxError: Mismatched closing tag: expected </\${last.tagName}> (opened at line \${last.line}) but found </\${tagName}>\`);
+      process.exit(1);
+    }
+  } else if (!isSelfClosing) {
+    const line = content.substring(0, match.index).split('\\n').length;
+    stack.push({ tagName, index: match.index, line });
+  }
+}
+
+if (stack.length > 0) {
+  const unclosed = stack.map(s => \`<\${s.tagName}> (opened at line \${s.line})\`).join(', ');
+  const last = stack[stack.length - 1];
+  console.error(\`\${filePath}:\${last.line}\\nSyntaxError: Unclosed HTML tag(s): \${unclosed}\`);
+  process.exit(1);
+}
+
+process.exit(0);
+`;
+
+  try {
+    execFileSync(process.execPath, ["-e", htmlCheckerScript, tempFile], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    return { valid: true };
+  } catch (err) {
+    return {
+      valid: false,
+      error: (err.stderr || err.stdout || err.message || "").trim(),
+    };
+  } finally {
+    if (fs.existsSync(tempFile)) {
+      try { fs.unlinkSync(tempFile); } catch (_) {}
+    }
+  }
+}
+
+/**
+ * 4. Checks Markdown content for syntax errors.
+ * Validates unclosed code fences and malformed table delimiters.
+ */
+function checkMarkdownSyntax(markdownContent) {
+  const text = String(markdownContent || "").trim();
+  if (!text) {
+    return { valid: false, error: "Extracted Markdown content is empty." };
+  }
+
+  // Check unclosed code fences (``` count must be even)
+  const codeBlockMatches = text.match(/```/g);
+  if (codeBlockMatches && codeBlockMatches.length % 2 !== 0) {
+    return {
+      valid: false,
+      error: "SyntaxError in Markdown: Unclosed code block (odd number of ``` fences).",
+    };
+  }
+
+  // Check broken table delimiters
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/^\|?\s*[:\s]*-[-\s:]*\|/.test(line)) {
+      const prevLine = i > 0 ? lines[i - 1].trim() : "";
+      if (!prevLine || !prevLine.includes("|")) {
+        return {
+          valid: false,
+          error: `SyntaxError in Markdown: Table delimiter at line ${i + 1} without a valid preceding header row.`,
+        };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Master Syntax Fixer: Checks code using Node command validator.
+ * If syntax error is detected:
+ * Feeds the previous code + Node.js error message back to AI.
+ * Strict restriction: AI must ONLY fix the specific syntax error.
+ * Does NOT generate new code, does not alter content or structure.
+ */
+async function fixCodeSyntaxWithAI({
+  code,
+  type,
+  validatorFn,
+  maxRetries = 2,
+  onProgress = null,
+}) {
+  let currentCode = code;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const syntaxResult = validatorFn(currentCode);
+    if (syntaxResult.valid) {
+      if (attempt > 0) {
+        console.log(`✅ [Syntax Self-Heal] Successfully fixed ${type.toUpperCase()} syntax error after ${attempt} attempt(s).`);
+      }
+      return currentCode;
+    }
+
+    console.warn(`⚠️ [Syntax Check] Detected syntax error in ${type.toUpperCase()} (attempt ${attempt + 1}/${maxRetries + 1}):\n${syntaxResult.error}`);
+
+    if (attempt === maxRetries) {
+      console.error(`❌ [Syntax Check] Max retries (${maxRetries}) reached for ${type.toUpperCase()} syntax fix.`);
+      return currentCode;
+    }
+
+    if (typeof onProgress === "function") {
+      onProgress(`Fixing ${type.toUpperCase()} syntax error (attempt ${attempt + 1})...`);
+    }
+
+    let typeSpecificInstruction = "";
+    if (type === "pptx") {
+      typeSpecificInstruction = "The code is raw JavaScript for pptxgenjs. Return ONLY raw executable JavaScript code with NO markdown fences, NO backticks, and NO explanations.";
+    } else if (type === "docx") {
+      typeSpecificInstruction = "The code is a JSON document plan for docx. Return ONLY valid, parseable raw JSON with NO markdown fences, NO backticks, and NO explanations.";
+    } else if (type === "html") {
+      typeSpecificInstruction = "The code is HTML / extracted data markup. Return ONLY the raw corrected HTML markup with NO markdown fences, NO backticks, and NO explanations.";
+    } else if (type === "markdown") {
+      typeSpecificInstruction = "The content is structured Markdown. Return ONLY valid, complete Markdown with properly closed code fences and balanced tables. Do NOT wrap the entire response in outer code blocks, and provide NO explanations.";
+    }
+
+    const systemPrompt = `You are an expert code syntax repair assistant.
+A syntax error was detected by the Node.js compiler/runtime in the previously generated code.
+
+CRITICAL RESTRICTIONS AND RULES:
+1. Fix ONLY the specific syntax error indicated by Node.js.
+2. DO NOT generate anything new.
+3. DO NOT change any existing text, wording, facts, dates, values, numbers, or section content.
+4. DO NOT add or remove slides, sections, table rows, or columns.
+5. DO NOT change styling, color palettes, or layout choices.
+6. ONLY fix the exact syntax mistake (such as an unclosed tag, unmatched bracket or parenthesis, missing comma, illegal token, unescaped quote, or malformed syntax).
+7. ${typeSpecificInstruction}`;
+
+    const userPrompt = `Here is the Node.js syntax error report:
+---------------- NODE.JS ERROR LOG ----------------
+${syntaxResult.error}
+----------------------------------------------------
+
+Here is the previous generated code with the syntax error:
+---------------- PREVIOUS CODE ----------------
+${currentCode}
+-----------------------------------------------
+
+CRITICAL REQUIREMENT:
+Fix ONLY the specific syntax error identified above. Do NOT generate anything new. Do NOT alter any content or structure. Output ONLY the corrected code:`;
+
+    try {
+      let repaired = await callAI(systemPrompt, userPrompt);
+      if (repaired && repaired.trim()) {
+        if (type === "pptx") {
+          repaired = repaired
+            .replace(/^```(?:javascript|js)?\s*/gim, "")
+            .replace(/```\s*$/gim, "")
+            .trim();
+        } else if (type === "docx") {
+          repaired = repaired
+            .replace(/^```(?:json|javascript|js)?\s*/gim, "")
+            .replace(/```\s*$/gim, "")
+            .trim();
+        } else if (type === "html") {
+          repaired = repaired
+            .replace(/^```(?:html|xml)?\s*/gim, "")
+            .replace(/```\s*$/gim, "")
+            .trim();
+        } else if (type === "markdown") {
+          repaired = repaired
+            .replace(/^```(?:markdown)?\s*\r?\n/i, "")
+            .replace(/\r?\n```\s*$/i, "")
+            .trim();
+        }
+        currentCode = repaired;
+      }
+    } catch (aiErr) {
+      console.error(`❌ [Syntax Self-Heal] AI call failed during syntax repair attempt: ${aiErr.message}`);
+      break;
+    }
+  }
+
+  return currentCode;
 }
 
 // ----------------------------------------------------------------------------
